@@ -11,7 +11,7 @@
 - ESP32 开发板能否正常编译和上传程序
 - WS2812B 灯带能否被 FastLED 控制
 - 灯带数据引脚、供电和共地是否工作正常
-- 两种 ESP32 板型是否都能使用同一份测试代码
+- 多种 ESP32 板型是否都能使用同一份测试代码
 
 ## 当前实现内容
 
@@ -53,6 +53,7 @@ FastLED.setBrightness(50);
 | --- | --- | --- |
 | `microduino-core-esp32` | `microduino-core-esp32` | Microduino Core ESP32 测试 |
 | `esp32-wroom-32` | `esp32dev` | ESP32-WROOM-32 / 通用 ESP32 Dev Module 测试 |
+| `m5stack-core-esp32` | `m5stack-core-esp32` | M5Stack Core ESP32 测试 |
 
 两个环境共享：
 
@@ -94,6 +95,7 @@ FastLED.setBrightness(50);
 - FastLED 已加入 `lib_deps`
 - Microduino Core ESP32 环境可编译
 - ESP32-WROOM-32 环境可编译
+- M5Stack Core ESP32 环境已加入配置
 - `.pio` 构建缓存已通过 `.gitignore` 忽略
 - GitHub 远程仓库已配置为 `https://github.com/zzzz1121/A-dream.git`
 
@@ -133,6 +135,7 @@ pio run
 ```powershell
 pio run -e microduino-core-esp32
 pio run -e esp32-wroom-32
+pio run -e m5stack-core-esp32
 ```
 
 上传前请确认连接的是对应的开发板，并优先使用外部 5V 电源给灯带供电。

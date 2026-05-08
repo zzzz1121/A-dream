@@ -17,7 +17,7 @@
 
 ## 当前测试硬件
 
-- Microduino Core ESP32 或 ESP32-WROOM-32 开发板
+- Microduino Core ESP32、ESP32-WROOM-32 或 M5Stack Core ESP32 开发板
 - WS2812B / NeoPixel 兼容灯带
 - 外部 5V 电源，按灯珠数量和亮度选择足够电流
 - 杜邦线
@@ -28,6 +28,7 @@
 | --- | --- |
 | `microduino-core-esp32` | Microduino Core ESP32 |
 | `esp32-wroom-32` | ESP32-WROOM-32 / ESP32 Dev Module |
+| `m5stack-core-esp32` | M5Stack Core ESP32 |
 
 ## 接线
 
@@ -74,6 +75,7 @@ pio run
 ```powershell
 pio run -e microduino-core-esp32
 pio run -e esp32-wroom-32
+pio run -e m5stack-core-esp32
 ```
 
 上传到开发板：
@@ -87,6 +89,7 @@ pio run --target upload
 ```powershell
 pio run -e microduino-core-esp32 --target upload
 pio run -e esp32-wroom-32 --target upload
+pio run -e m5stack-core-esp32 --target upload
 ```
 
 打开串口监视器：
