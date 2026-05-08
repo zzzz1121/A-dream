@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <FastLED.h>
 #include <M5Stack.h>
+#include <Wire.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
@@ -10,8 +11,17 @@
 #define LED_PIN 4
 #define NUM_LEDS 1
 #define BUTTON_REFRESH_MS 80
+#define ENCODER_POLL_MS 20
+#define ENCODER_COLOR_STEP_INTERVAL_MS 180
+#define ENCODER_STATUS_REFRESH_MS 200
 #define UPTIME_REFRESH_MS 1000
 #define ESPNOW_CHANNEL 1
+#define I2C_SDA_PIN 21
+#define I2C_SCL_PIN 22
+#define I2C_SCAN_REFRESH_MS 1500
+#define FACES_ENCODER_I2C_ADDR 0x5E
+#define FALLBACK_ENCODER_I2C_ADDR 0x62
+#define MAX_I2C_SCAN_RESULTS 12
 
 CRGB leds[NUM_LEDS];
 
@@ -42,6 +52,8 @@ struct EspNowControlPacket {
   char button[8];
   char action[16];
   char color[16];
+  int32_t encoderDelta;
+  int32_t flowPosition;
   uint32_t sequence;
   uint32_t uptimeMs;
 };
@@ -49,9 +61,21 @@ struct EspNowControlPacket {
 uint8_t colorIndex = 0;
 uint32_t buttonEventCount = 0;
 uint32_t espNowSequence = 0;
+int32_t encoderStepCount = 0;
 unsigned long lastButtonRefresh = 0;
+unsigned long lastEncoderPoll = 0;
+unsigned long lastEncoderColorStep = 0;
+unsigned long lastEncoderStatusRefresh = 0;
+unsigned long lastI2CScan = 0;
 unsigned long lastUptimeRefresh = 0;
 char lastEvent[32] = "boot";
+bool facesEncoderReady = false;
+uint32_t facesEncoderFailCount = 0;
+uint8_t facesEncoderButton = 1;
+uint8_t lastFacesEncoderRawIncrement = 0;
+uint8_t activeEncoderI2CAddr = FACES_ENCODER_I2C_ADDR;
+uint8_t i2cScanResults[MAX_I2C_SCAN_RESULTS] = {};
+uint8_t i2cScanCount = 0;
 
 uint16_t currentLcdColor() {
   const CRGB color = COLORS[colorIndex];
@@ -68,32 +92,35 @@ void drawStaticScreen() {
   M5.Lcd.setTextSize(2);
   M5.Lcd.setTextColor(0xFFFF, 0x18E3);
   M5.Lcd.setCursor(12, 8);
-  M5.Lcd.print("M5 RGB Button Test");
+  M5.Lcd.print("M5 I2C Encoder RGB");
 
   M5.Lcd.setTextColor(0xFFFF, 0x0000);
   M5.Lcd.setCursor(18, 48);
   M5.Lcd.print("Color:");
 
-  M5.Lcd.setCursor(18, 88);
+  M5.Lcd.setCursor(18, 80);
+  M5.Lcd.print("Enc:");
+
+  M5.Lcd.setCursor(18, 108);
   M5.Lcd.print("Count:");
 
-  M5.Lcd.setCursor(18, 116);
+  M5.Lcd.setCursor(18, 136);
   M5.Lcd.print("Uptime:");
 
-  M5.Lcd.setCursor(18, 144);
+  M5.Lcd.setCursor(18, 164);
   M5.Lcd.print("Last:");
 
-  M5.Lcd.setCursor(18, 172);
+  M5.Lcd.setCursor(18, 190);
   M5.Lcd.print("A:");
-  M5.Lcd.setCursor(18, 194);
+  M5.Lcd.setCursor(18, 208);
   M5.Lcd.print("B:");
-  M5.Lcd.setCursor(18, 216);
+  M5.Lcd.setCursor(18, 226);
   M5.Lcd.print("C:");
 
   M5.Lcd.setTextSize(1);
   M5.Lcd.setTextColor(0xC618, 0x0000);
-  M5.Lcd.setCursor(152, 226);
-  M5.Lcd.print("A prev  B next  C off  IO4 RGB");
+  M5.Lcd.setCursor(136, 226);
+  M5.Lcd.print("I2C encoder  A/B color");
 }
 
 void drawColorArea() {
@@ -109,25 +136,60 @@ void drawColorArea() {
 
 void drawCountArea() {
   M5.Lcd.setTextSize(2);
-  M5.Lcd.fillRect(110, 84, 170, 24, 0x0000);
+  M5.Lcd.fillRect(110, 104, 170, 24, 0x0000);
   M5.Lcd.setTextColor(0xFFFF, 0x0000);
-  M5.Lcd.setCursor(110, 88);
+  M5.Lcd.setCursor(110, 108);
   M5.Lcd.print(buttonEventCount);
+}
+
+void drawEncoderArea() {
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.fillRect(110, 76, 170, 24, 0x0000);
+  M5.Lcd.setTextColor(0xFFFF, 0x0000);
+  M5.Lcd.setCursor(110, 80);
+  M5.Lcd.print(encoderStepCount);
+
+  M5.Lcd.setTextSize(1);
+  M5.Lcd.fillRect(110, 96, 200, 10, 0x0000);
+  M5.Lcd.setTextColor(facesEncoderReady ? 0x07E0 : 0xF800, 0x0000);
+  M5.Lcd.setCursor(110, 96);
+
+  if (facesEncoderReady) {
+    M5.Lcd.printf("I2C 0x%02X:OK key:%d raw:%u",
+                  activeEncoderI2CAddr,
+                  facesEncoderButton,
+                  lastFacesEncoderRawIncrement);
+    return;
+  }
+
+  M5.Lcd.print("scan:");
+  if (i2cScanCount == 0) {
+    M5.Lcd.print("none");
+    return;
+  }
+
+  for (uint8_t i = 0; i < i2cScanCount && i < 6; i++) {
+    M5.Lcd.print(" ");
+    if (i2cScanResults[i] < 0x10) {
+      M5.Lcd.print("0");
+    }
+    M5.Lcd.print(i2cScanResults[i], HEX);
+  }
 }
 
 void drawUptimeArea() {
   M5.Lcd.setTextSize(2);
-  M5.Lcd.fillRect(126, 112, 150, 24, 0x0000);
+  M5.Lcd.fillRect(126, 132, 150, 24, 0x0000);
   M5.Lcd.setTextColor(0xFFFF, 0x0000);
-  M5.Lcd.setCursor(126, 116);
+  M5.Lcd.setCursor(126, 136);
   M5.Lcd.printf("%lus", millis() / 1000);
 }
 
 void drawLastEventArea() {
   M5.Lcd.setTextSize(2);
-  M5.Lcd.fillRect(92, 140, 210, 24, 0x0000);
+  M5.Lcd.fillRect(92, 160, 210, 24, 0x0000);
   M5.Lcd.setTextColor(0xFFFF, 0x0000);
-  M5.Lcd.setCursor(92, 144);
+  M5.Lcd.setCursor(92, 164);
   M5.Lcd.print(lastEvent);
 }
 
@@ -140,13 +202,14 @@ void drawStatusValue(int y, bool pressed) {
 }
 
 void drawButtonStatusArea() {
-  drawStatusValue(172, M5.BtnA.isPressed());
-  drawStatusValue(194, M5.BtnB.isPressed());
-  drawStatusValue(216, M5.BtnC.isPressed());
+  drawStatusValue(190, M5.BtnA.isPressed());
+  drawStatusValue(208, M5.BtnB.isPressed());
+  drawStatusValue(226, M5.BtnC.isPressed());
 }
 
 void drawDynamicAreas() {
   drawColorArea();
+  drawEncoderArea();
   drawCountArea();
   drawUptimeArea();
   drawLastEventArea();
@@ -161,6 +224,7 @@ void setColor(uint8_t index) {
   Serial.print("COLOR=");
   Serial.println(COLOR_NAMES[colorIndex]);
   drawColorArea();
+  drawEncoderArea();
   drawCountArea();
   drawLastEventArea();
 }
@@ -223,14 +287,16 @@ void initEspNowSender() {
   Serial.println("EVENT=ESPNOW_SENDER_READY MODE=BROADCAST");
 }
 
-void sendEspNowControl(const char *button, const char *action) {
+void sendEspNowControl(const char *eventType, const char *button, const char *action, int32_t encoderDelta) {
   EspNowControlPacket packet = {};
   packet.magic = PACKET_MAGIC;
   strncpy(packet.board, ESPNOW_BOARD_NAME, sizeof(packet.board) - 1);
-  strncpy(packet.event, "BUTTON_PRESS", sizeof(packet.event) - 1);
+  strncpy(packet.event, eventType, sizeof(packet.event) - 1);
   strncpy(packet.button, button, sizeof(packet.button) - 1);
   strncpy(packet.action, action, sizeof(packet.action) - 1);
   strncpy(packet.color, COLOR_NAMES[colorIndex], sizeof(packet.color) - 1);
+  packet.encoderDelta = encoderDelta;
+  packet.flowPosition = encoderStepCount;
   packet.sequence = ++espNowSequence;
   packet.uptimeMs = millis();
 
@@ -242,17 +308,184 @@ void sendEspNowControl(const char *button, const char *action) {
   Serial.print(action);
   Serial.print(" COLOR=");
   Serial.print(packet.color);
+  Serial.print(" ENCODER_DELTA=");
+  Serial.print(packet.encoderDelta);
+  Serial.print(" ENCODER_POS=");
+  Serial.print(packet.flowPosition);
   Serial.print(" SEQ=");
   Serial.print(packet.sequence);
   Serial.print(" RESULT=");
   Serial.println(result == ESP_OK ? "QUEUED" : "ERROR");
 }
 
+void sendEncoderColorStep(int32_t delta, const char *source) {
+  encoderStepCount += delta;
+  buttonEventCount++;
+
+  if (delta > 0) {
+    setColor((colorIndex + 1) % COLOR_COUNT);
+    setLastEvent("enc next");
+    sendEspNowControl("ENCODER_ROTATE", "ENC", "COLOR_NEXT", delta);
+    Serial.print("EVENT=ENCODER_ROTATE DIR=CW ENCODER_POS=");
+  } else {
+    setColor((colorIndex + COLOR_COUNT - 1) % COLOR_COUNT);
+    setLastEvent("enc ccw");
+    sendEspNowControl("ENCODER_ROTATE", "ENC", "COLOR_PREVIOUS", delta);
+    Serial.print("EVENT=ENCODER_ROTATE DIR=CCW ENCODER_POS=");
+  }
+
+  Serial.print(encoderStepCount);
+  Serial.print(" SRC=");
+  Serial.println(source);
+  drawEncoderArea();
+  drawCountArea();
+  drawLastEventArea();
+}
+
+bool i2cDevicePresent(uint8_t address) {
+  Wire.beginTransmission(address);
+  return Wire.endTransmission() == 0;
+}
+
+void scanI2CBus() {
+  Serial.println("EVENT=I2C_SCAN_START");
+  i2cScanCount = 0;
+
+  for (uint8_t address = 1; address < 127; address++) {
+    if (i2cDevicePresent(address)) {
+      if (i2cScanCount < MAX_I2C_SCAN_RESULTS) {
+        i2cScanResults[i2cScanCount] = address;
+      }
+      i2cScanCount++;
+
+      Serial.print("EVENT=I2C_DEVICE_FOUND ADDR=0x");
+      if (address < 0x10) {
+        Serial.print("0");
+      }
+      Serial.println(address, HEX);
+    }
+  }
+
+  Serial.print("EVENT=I2C_SCAN_DONE FOUND=");
+  Serial.println(i2cScanCount);
+}
+
+bool chooseEncoderI2CAddress() {
+  if (i2cDevicePresent(FACES_ENCODER_I2C_ADDR)) {
+    activeEncoderI2CAddr = FACES_ENCODER_I2C_ADDR;
+    return true;
+  }
+
+  if (i2cDevicePresent(FALLBACK_ENCODER_I2C_ADDR)) {
+    activeEncoderI2CAddr = FALLBACK_ENCODER_I2C_ADDR;
+    return true;
+  }
+
+  activeEncoderI2CAddr = FACES_ENCODER_I2C_ADDR;
+  return false;
+}
+
+bool readFacesEncoder(uint8_t &rawIncrement, uint8_t &buttonState) {
+  const uint8_t bytesRequested = 3;
+  const uint8_t bytesReceived = Wire.requestFrom(activeEncoderI2CAddr, bytesRequested);
+
+  if (bytesReceived < 2) {
+    while (Wire.available()) {
+      Wire.read();
+    }
+    return false;
+  }
+
+  rawIncrement = Wire.read();
+  buttonState = Wire.read();
+
+  while (Wire.available()) {
+    Wire.read();
+  }
+
+  return true;
+}
+
+int32_t decodeFacesEncoderDelta(uint8_t rawIncrement) {
+  if (rawIncrement == 0) {
+    return 0;
+  }
+
+  if (rawIncrement > 127) {
+    return -static_cast<int32_t>(256 - rawIncrement);
+  }
+
+  return rawIncrement;
+}
+
+void handleEncoder() {
+  if (millis() - lastEncoderPoll < ENCODER_POLL_MS) {
+    return;
+  }
+  lastEncoderPoll = millis();
+
+  uint8_t rawIncrement = 0;
+  uint8_t buttonState = facesEncoderButton;
+  if (!readFacesEncoder(rawIncrement, buttonState)) {
+    facesEncoderFailCount++;
+    lastFacesEncoderRawIncrement = 0;
+
+    if (facesEncoderReady) {
+      facesEncoderReady = false;
+      setLastEvent("i2c lost");
+      Serial.print("EVENT=FACES_ENCODER_LOST FAIL_COUNT=");
+      Serial.println(facesEncoderFailCount);
+      drawEncoderArea();
+      drawLastEventArea();
+    }
+    return;
+  }
+
+  if (!facesEncoderReady) {
+    facesEncoderReady = true;
+    setLastEvent("i2c ready");
+    Serial.print("EVENT=FACES_ENCODER_READY ADDR=0x");
+    Serial.println(activeEncoderI2CAddr, HEX);
+    drawEncoderArea();
+    drawLastEventArea();
+  }
+
+  facesEncoderButton = buttonState;
+  lastFacesEncoderRawIncrement = rawIncrement;
+
+  const int32_t delta = decodeFacesEncoderDelta(rawIncrement);
+  if (delta == 0) {
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (now - lastEncoderColorStep < ENCODER_COLOR_STEP_INTERVAL_MS) {
+    Serial.print("EVENT=FACES_ENCODER_ROTATE_IGNORED RAW=");
+    Serial.print(rawIncrement);
+    Serial.print(" DELTA=");
+    Serial.print(delta);
+    Serial.print(" REASON=THROTTLE_MS_");
+    Serial.println(ENCODER_COLOR_STEP_INTERVAL_MS);
+    return;
+  }
+  lastEncoderColorStep = now;
+
+  Serial.print("EVENT=FACES_ENCODER_ROTATE RAW=");
+  Serial.print(rawIncrement);
+  Serial.print(" DELTA=");
+  Serial.print(delta);
+  Serial.print(" COLOR_STEP=1");
+  Serial.print(" KEY=");
+  Serial.println(buttonState);
+
+  sendEncoderColorStep(delta > 0 ? 1 : -1, "I2C");
+}
+
 void nextColor() {
   buttonEventCount++;
   setLastEvent("B next");
   setColor((colorIndex + 1) % COLOR_COUNT);
-  sendEspNowControl("B", "NEXT");
+  sendEspNowControl("BUTTON_PRESS", "B", "NEXT", 0);
   Serial.print("EVENT=BUTTON_PRESS BUTTON=B ACTION=NEXT COLOR=");
   Serial.println(COLOR_NAMES[colorIndex]);
 }
@@ -261,7 +494,7 @@ void previousColor() {
   buttonEventCount++;
   setLastEvent("A previous");
   setColor((colorIndex + COLOR_COUNT - 1) % COLOR_COUNT);
-  sendEspNowControl("A", "PREVIOUS");
+  sendEspNowControl("BUTTON_PRESS", "A", "PREVIOUS", 0);
   Serial.print("EVENT=BUTTON_PRESS BUTTON=A ACTION=PREVIOUS COLOR=");
   Serial.println(COLOR_NAMES[colorIndex]);
 }
@@ -270,7 +503,7 @@ void offColor() {
   buttonEventCount++;
   setLastEvent("C off");
   setColor(COLOR_COUNT - 1);
-  sendEspNowControl("C", "OFF");
+  sendEspNowControl("BUTTON_PRESS", "C", "OFF", 0);
   Serial.println("EVENT=BUTTON_PRESS BUTTON=C ACTION=OFF COLOR=off");
 }
 
@@ -291,14 +524,29 @@ void flashUploadMarker() {
 
 void setup() {
   M5.begin();
+  M5.Power.begin();
   Serial.begin(115200);
   delay(300);
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.setClock(100000);
+  dacWrite(25, 0);
 
   Serial.println();
   Serial.print("Starting screen button RGB test for ");
   Serial.println(BOARD_NAME);
   Serial.println("RGB LED data pin: GPIO 4");
   Serial.println("A=previous color, B=next color, C=off");
+  Serial.println("Faces Encoder: I2C address 0x5E, Mega328 module");
+  Serial.println("Fallback test address: 0x62");
+  Serial.println("I2C pins: SDA=GPIO21, SCL=GPIO22, speed=100kHz");
+  Serial.println("Rotate encoder = change color, ESP-NOW sends color to Microduino");
+
+  scanI2CBus();
+  facesEncoderReady = chooseEncoderI2CAddress();
+  Serial.print("EVENT=FACES_ENCODER_BOOT_STATUS ACTIVE_ADDR=0x");
+  Serial.print(activeEncoderI2CAddr, HEX);
+  Serial.print(" STATUS=");
+  Serial.println(facesEncoderReady ? "OK" : "NOT_FOUND");
 
   initEspNowSender();
 
@@ -314,6 +562,7 @@ void setup() {
 
 void loop() {
   M5.update();
+  handleEncoder();
 
   if (M5.BtnA.wasPressed()) {
     previousColor();
@@ -342,6 +591,18 @@ void loop() {
   if (millis() - lastButtonRefresh >= BUTTON_REFRESH_MS) {
     lastButtonRefresh = millis();
     drawButtonStatusArea();
+  }
+
+  if (millis() - lastEncoderStatusRefresh >= ENCODER_STATUS_REFRESH_MS) {
+    lastEncoderStatusRefresh = millis();
+    drawEncoderArea();
+  }
+
+  if (!facesEncoderReady && millis() - lastI2CScan >= I2C_SCAN_REFRESH_MS) {
+    lastI2CScan = millis();
+    scanI2CBus();
+    facesEncoderReady = chooseEncoderI2CAddress();
+    drawEncoderArea();
   }
 
   if (millis() - lastUptimeRefresh >= UPTIME_REFRESH_MS) {

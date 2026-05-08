@@ -18,6 +18,8 @@ struct EspNowControlPacket {
   char button[8];
   char action[16];
   char color[16];
+  int32_t encoderDelta;
+  int32_t flowPosition;
   uint32_t sequence;
   uint32_t uptimeMs;
 };
@@ -29,7 +31,7 @@ uint32_t receivedCount = 0;
 unsigned long lastHeartbeatTime = 0;
 bool colorUpdatePending = false;
 char pendingColor[16] = "off";
-char currentColor[16] = "off";
+char currentColor[16] = "red";
 
 CRGB colorFromName(const char *name) {
   if (strcmp(name, "red") == 0) {
@@ -47,12 +49,16 @@ CRGB colorFromName(const char *name) {
   return CRGB::Black;
 }
 
+void showCurrentColor() {
+  leds[0] = colorFromName(currentColor);
+  FastLED.show();
+}
+
 void applyColor(const char *name) {
   strncpy(currentColor, name, sizeof(currentColor) - 1);
   currentColor[sizeof(currentColor) - 1] = '\0';
 
-  leds[0] = colorFromName(currentColor);
-  FastLED.show();
+  showCurrentColor();
 
   Serial.print("EVENT=RGB_APPLIED COLOR=");
   Serial.println(currentColor);
@@ -67,12 +73,12 @@ void flashStartupMarker() {
   };
 
   for (uint8_t i = 0; i < sizeof(bootColors) / sizeof(bootColors[0]); i++) {
-    leds[0] = bootColors[i];
+    fill_solid(leds, NUM_LEDS, bootColors[i]);
     FastLED.show();
     delay(180);
   }
 
-  applyColor("off");
+  applyColor("red");
 }
 
 void printMacAddress(const uint8_t *mac) {
@@ -136,6 +142,10 @@ void onDataReceived(const uint8_t *macAddress, const uint8_t *incomingData, int 
       Serial.print(packet.action);
       Serial.print(" COLOR=");
       Serial.print(packet.color);
+      Serial.print(" ENCODER_DELTA=");
+      Serial.print(packet.encoderDelta);
+      Serial.print(" ENCODER_POS=");
+      Serial.print(packet.flowPosition);
       Serial.print(" SEQ=");
       Serial.print(packet.sequence);
       Serial.print(" REMOTE_UPTIME_MS=");
