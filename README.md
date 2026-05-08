@@ -1,6 +1,10 @@
 # A-dream
 
-基于 ESP32 的 WS2812B 灯带测试项目。项目使用 PlatformIO + Arduino framework 开发，并通过 FastLED 控制灯带颜色。
+`A-dream` 是一个基于 ESP32 和灯光控制的装置项目。当前仓库还处在早期硬件测试阶段，主要用于验证 ESP32 开发板、WS2812B 灯带、FastLED 库和 PlatformIO 开发环境是否工作正常。
+
+更完整的阶段说明见：[仓库现状说明](docs/repository-status.md)。
+
+## 当前阶段
 
 当前程序会依次执行：
 
@@ -9,7 +13,9 @@
 - 点亮第 2 颗灯珠为绿色
 - 点亮第 3 颗灯珠为蓝色
 
-## 硬件
+这段代码只是装置开发前的基础测试，不代表最终装置效果。
+
+## 当前测试硬件
 
 - Microduino Core ESP32 或 ESP32-WROOM-32 开发板
 - WS2812B / NeoPixel 兼容灯带
