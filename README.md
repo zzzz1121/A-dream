@@ -1,6 +1,6 @@
 # A-dream
 
-基于 Microduino Core ESP32 的 WS2812B 灯带测试项目。项目使用 PlatformIO + Arduino framework 开发，并通过 FastLED 控制灯带颜色。
+基于 ESP32 的 WS2812B 灯带测试项目。项目使用 PlatformIO + Arduino framework 开发，并通过 FastLED 控制灯带颜色。
 
 当前程序会依次执行：
 
@@ -11,10 +11,17 @@
 
 ## 硬件
 
-- Microduino Core ESP32
+- Microduino Core ESP32 或 ESP32-WROOM-32 开发板
 - WS2812B / NeoPixel 兼容灯带
 - 外部 5V 电源，按灯珠数量和亮度选择足够电流
 - 杜邦线
+
+## 支持的开发板
+
+| PlatformIO 环境 | 板子 |
+| --- | --- |
+| `microduino-core-esp32` | Microduino Core ESP32 |
+| `esp32-wroom-32` | ESP32-WROOM-32 / ESP32 Dev Module |
 
 ## 接线
 
@@ -56,10 +63,24 @@ cd A-dream
 pio run
 ```
 
+只编译指定板子：
+
+```powershell
+pio run -e microduino-core-esp32
+pio run -e esp32-wroom-32
+```
+
 上传到开发板：
 
 ```powershell
 pio run --target upload
+```
+
+上传到指定板子：
+
+```powershell
+pio run -e microduino-core-esp32 --target upload
+pio run -e esp32-wroom-32 --target upload
 ```
 
 打开串口监视器：
