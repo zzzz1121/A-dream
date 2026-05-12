@@ -2,7 +2,7 @@
 #include <esp_dmx.h>
 
 // Microduino Core ESP32 射灯测试固件。
-// 当前文件用于通过 DMX512 / MAX485 测试两盏 RGBW 射灯。
+// 通过 DMX512 / MAX485 测试两盏 RGBW 射灯。
 
 #define DMX_PORT DMX_NUM_1
 
