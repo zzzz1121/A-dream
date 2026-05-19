@@ -1,17 +1,45 @@
-# 仓库现状说明
+# Dream 仓库状态说明
 
 更新时间：2026-05-08
 
 ## 当前定位
 
-`A-dream` 是“梦境泡泡光影装置”的 ESP32 固件与文档仓库。当前阶段不是最终展出程序，而是硬件验证和通讯链路打样。
+`Dream` 是同名装置的 ESP32 固件与文档仓库。当前阶段不是最终展出程序，而是硬件验证和通讯链路打样。
 
-项目需求基线为 `docs/梦境泡泡光影装置_需求规划文档_V3.0(1).docx`。需求中的最终方向仍是：
+项目需求基线为 `docs/Dream需求规划文档_V3.0.docx`。需求中的最终方向仍是：
 
 - BLE 接收脑电头环数据
 - DMX512 控制体验者附近两盏 RGB 射灯
 - ESP-NOW 实现主控和从控通讯
 - 从控驱动步进电机、造雾机继电器和触发传感器
+
+## 最新通信决策
+
+当前主通信路径已调整为：
+
+```text
+脑电设备 --Bluetooth--> 电脑
+电脑读取 ThinkGear COM 口并解析
+电脑 --USB Serial--> M5Stack
+M5Stack 显示 EEG / 链路 / 状态
+M5Stack --ESP-NOW--> Microduino
+Microduino 控制 DMX 灯光 / 步进电机 / 继电器
+```
+
+角色更新：
+
+| 设备 | 当前角色 |
+| --- | --- |
+| 电脑 | 脑电读取与解析，向 M5Stack 发送统一 EEG 文本帧 |
+| M5Stack | USB 串口网关 + 现场监测屏，通过 ESP-NOW 转发给 Microduino |
+| Microduino | 执行控制器，负责本地安全状态机和设备输出 |
+
+关键安全原则：
+
+- M5Stack 只负责显示和转发，不直接控制继电器、步进电机或灯光。
+- Microduino 必须在本地判断超时、信号差和安全状态。
+- 电脑串口断开、M5Stack 掉线或 ESP-NOW 丢包时，Microduino 必须在 2-3 秒内进入安全状态。
+- Wi-Fi UDP 保留为调试备选，不作为当前主控制链路。
 
 ## 当前已跑通内容
 
@@ -72,8 +100,8 @@ monitor_port = COM6
 ├── README.md
 ├── platformio.ini
 ├── docs/
-│   ├── repository-status.md
-│   └── 梦境泡泡光影装置_需求规划文档_V3.0(1).docx
+│   ├── Dream仓库状态说明.md
+│   └── Dream需求规划文档_V3.0.docx
 ├── src/
 │   ├── microduino_core_esp32_test/
 │   │   └── main.cpp
