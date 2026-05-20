@@ -1,8 +1,11 @@
 # Dream 脑电转发到 Microduino 技术方案
 
-更新时间：2026-05-19  
+更新时间：2026-05-20  
 当前决策：电脑通过 USB 串口直连 M5Stack，M5Stack 通过 ESP-NOW 转发给 Microduino。  
 适用范围：脑电数据从电脑进入装置、M5Stack 监测显示、Microduino 执行控制。
+
+补充更新：2026-05-20  
+电脑端同时提供浏览器实时前端。前端只显示真实 EEG、M5Stack 和 Microduino 回传状态；没有真实数据时显示 `--` 或等待。所有控制按钮都有发送中、已发送、失败反馈。
 
 ## 1. 当前结论
 
@@ -143,6 +146,8 @@ EEG,1024,35120,200,0,0,27,27,22,36,37,56,42,33
 - 校验 checksum。
 - 生成 `EEG` 文本帧。
 - 定时发送给 M5Stack。
+- 提供浏览器实时前端。
+- 接收前端控制请求，并生成 `CMD` 文本帧发送给 M5Stack。
 - 可选保存 CSV 日志。
 
 电脑端不负责：
@@ -150,6 +155,7 @@ EEG,1024,35120,200,0,0,27,27,22,36,37,56,42,33
 - 直接控制灯光。
 - 直接控制继电器。
 - 直接控制步进电机。
+- 在 M5Stack 串口未打开时接受控制命令为成功。
 
 ### 4.3 M5Stack 到 Microduino
 
@@ -216,6 +222,14 @@ EEG,seq,timeMs,poorSignal,attention,meditation,delta,theta,lowAlpha,highAlpha,lo
 | `highBeta` | uint32 | 高 Beta |
 | `lowGamma` | uint32 | 低 Gamma |
 | `midGamma` | uint32 | 中 Gamma |
+
+控制帧：
+
+```text
+CMD,seq,timeMs,action,arg1,arg2,arg3,arg4
+```
+
+前端按钮点击后会先请求 Python 本地 HTTP 接口。只有 M5Stack 串口打开时，Python 才会把 `CMD` 放入发送队列；否则返回失败，例如 `target serial is not open`。
 
 ### 5.2 M5Stack 到 Microduino ESP-NOW 包
 
@@ -288,6 +302,17 @@ safetyState
 micRxCount
 micDropCount
 ```
+
+电脑端前端同时显示：
+
+```text
+EEG 实时数据
+M5Stack 串口和 ESP-NOW 统计
+Microduino 灯光 / 继电器 / 电机 / 安全状态
+控制按钮发送反馈
+```
+
+无真实数据时不显示模拟值。
 
 ## 6. 频率与延迟
 

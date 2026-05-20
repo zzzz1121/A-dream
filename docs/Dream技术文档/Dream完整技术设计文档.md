@@ -1,8 +1,11 @@
 # Dream 完整技术设计文档
 
-更新时间：2026-05-18  
+更新时间：2026-05-20  
 文档状态：技术路线确认与实施前检查  
 适用范围：脑电采集、无线传输、Microduino 执行控制、M5Stack 监测、灯光、步进电机、继电器、电源、安全与现场部署。
+
+补充更新：2026-05-20  
+当前电脑端浏览器前端已经改为真实状态控制台：没有收到真实 EEG / M5Stack / Microduino 状态时显示 `--` 或等待，不使用假数据。所有控制按钮都有发送中、已发送、失败反馈；M5Stack 串口未打开时控制指令会失败，不进入发送队列。
 
 ## 1. 项目目标
 
@@ -173,6 +176,8 @@ EEG,1024,35120,200,0,0,27,27,22,36,37,56,42,33
 - 解析合法 ThinkGear 包。
 - 生成统一 EEG 状态。
 - 以固定频率通过 USB Serial 发送给 M5Stack。
+- 提供本地浏览器前端和 `/api/state`、`/events`、`/api/command` 接口。
+- 在前端只展示真实回传状态，没有真实数据时显示空状态。
 - 输出调试日志。
 - 可选保存 CSV 日志文件，方便回放和分析。
 
@@ -181,6 +186,7 @@ EEG,1024,35120,200,0,0,27,27,22,36,37,56,42,33
 - 直接控制继电器。
 - 直接生成步进电机脉冲。
 - 决定任何危险动作。
+- 在未连接 M5Stack 串口时假装命令发送成功。
 
 危险动作必须由 Microduino 端根据本地安全规则执行。
 
@@ -228,6 +234,35 @@ last error
 ```text
 timeMs,seq,poorSignal,attention,meditation,delta,theta,lowAlpha,highAlpha,lowBeta,highBeta,lowGamma,midGamma
 ```
+
+### 4.5 浏览器前端真实状态规则
+
+前端状态来自 Python 桥接程序的快照和事件流：
+
+```text
+GET /api/state
+GET /events
+POST /api/command
+```
+
+渲染规则：
+
+| 状态 | 前端显示 |
+| --- | --- |
+| `eeg.seen = false` | EEG 数值和频段显示 `--` |
+| `m5.seen = false` | M5 / ESP-NOW 统计显示等待 |
+| `mic.seen = false` | 灯光、继电器、电机、安全状态显示 `--` |
+| Microduino 掉线 | 不继续显示旧执行状态 |
+| M5Stack 串口未打开 | 控制按钮反馈失败，提示 `target serial is not open` |
+
+按钮反馈：
+
+```text
+发送中 -> 已发送
+发送中 -> 失败
+```
+
+`已发送` 表示命令进入电脑到 M5Stack 的串口发送队列，不表示 Microduino 已经执行。最终执行状态必须看 Microduino 状态回传。
 
 ## 5. Microduino 执行控制器设计
 

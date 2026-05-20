@@ -1,303 +1,247 @@
 #include <Arduino.h>
-#include <BLEAdvertisedDevice.h>
-#include <BLEDevice.h>
-#include <BLEScan.h>
-#include <BLEUtils.h>
-#include <FastLED.h>
 #include <M5Stack.h>
-#include <Wire.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <esp_arduino_version.h>
 
 #define BOARD_NAME "M5Stack Core ESP32"
-#define ESPNOW_BOARD_NAME "M5STACK"
-#define LED_PIN 4
-#define NUM_LEDS 1
-#define BUTTON_REFRESH_MS 80
-#define ENCODER_POLL_MS 20
-#define ENCODER_COLOR_STEP_INTERVAL_MS 180
-#define ENCODER_STATUS_REFRESH_MS 200
-#define UPTIME_REFRESH_MS 1000
+#define DEVICE_ROLE "m5GatewayMonitor"
 #define ESPNOW_CHANNEL 1
-#define I2C_SDA_PIN 21
-#define I2C_SCL_PIN 22
-#define I2C_SCAN_REFRESH_MS 1500
-#define FACES_ENCODER_I2C_ADDR 0x5E
-#define FALLBACK_ENCODER_I2C_ADDR 0x62
-#define MAX_I2C_SCAN_RESULTS 12
-#define THINKGEAR_BT_TARGET_NAME "MindWave Mobile"
-#define THINKGEAR_BLE_SCAN_SECONDS 5
-#define THINKGEAR_BLE_RESCAN_MS 2000
-#define THINKGEAR_BLE_SCAN_LINES 6
-#define THINKGEAR_MAX_PAYLOAD 169
-#define THINKGEAR_READ_BUDGET 96
-#define THINKGEAR_DISPLAY_REFRESH_MS 500
+#define SERIAL_BAUD 115200
+#define SERIAL_LINE_BUFFER_SIZE 192
+#define DISPLAY_REFRESH_MS 200
+#define STATUS_PRINT_MS 1000
+#define SERIAL_TIMEOUT_MS 3000
+#define MIC_STATUS_TIMEOUT_MS 3000
+#define DREAM_PACKET_MAGIC 0x44524541UL
+#define DREAM_PROTOCOL_VERSION 1
 
-CRGB leds[NUM_LEDS];
+const uint8_t BROADCAST_MAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-const CRGB COLORS[] = {
-  CRGB::Red,
-  CRGB::Green,
-  CRGB::Blue,
-  CRGB::White,
-  CRGB::Black,
+enum DreamPacketType : uint8_t {
+  DREAM_PACKET_EEG = 1,
+  DREAM_PACKET_MIC_STATUS = 2,
+  DREAM_PACKET_CONTROL = 3,
 };
 
-const char *const COLOR_NAMES[] = {
-  "red",
-  "green",
-  "blue",
-  "white",
-  "off",
+enum DreamPacketFlags : uint8_t {
+  EEG_FLAG_SIGNAL_OK = 1 << 0,
+  EEG_FLAG_SOURCE_TIMEOUT = 1 << 1,
+  EEG_FLAG_CHECKSUM_OK = 1 << 2,
 };
 
-const uint8_t COLOR_COUNT = sizeof(COLORS) / sizeof(COLORS[0]);
-const uint8_t BROADCAST_ADDRESS[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-const uint32_t PACKET_MAGIC = 0xAD202606;
-BLEScan *bleScan = nullptr;
+enum DreamLightMode : uint8_t {
+  LIGHT_OFF,
+  LIGHT_IDLE,
+  LIGHT_EEG_BLEND,
+  LIGHT_SIGNAL_BAD,
+  LIGHT_TIMEOUT,
+  LIGHT_MANUAL,
+};
 
-struct EspNowControlPacket {
+enum DreamStepperState : uint8_t {
+  STEPPER_DISABLED,
+  STEPPER_IDLE,
+  STEPPER_MOVING,
+  STEPPER_BREATHING,
+  STEPPER_LIMITED,
+  STEPPER_FAULT,
+};
+
+enum DreamRelayState : uint8_t {
+  RELAY_OFF,
+  RELAY_ARMING,
+  RELAY_ON,
+  RELAY_COOLDOWN,
+  RELAY_FAULT,
+};
+
+enum DreamSafetyState : uint8_t {
+  SAFETY_NORMAL,
+  SAFETY_SIGNAL_BAD,
+  SAFETY_LINK_TIMEOUT,
+  SAFETY_ESTOP,
+  SAFETY_FAULT,
+};
+
+enum DreamControlAction : uint8_t {
+  CONTROL_NONE,
+  CONTROL_SYSTEM_ENABLE,
+  CONTROL_SYSTEM_DISABLE,
+  CONTROL_LIGHT_AUTO,
+  CONTROL_LIGHT_COLOR,
+  CONTROL_LIGHT_OFF,
+  CONTROL_RELAY_ON,
+  CONTROL_RELAY_OFF,
+  CONTROL_STEPPER_FORWARD,
+  CONTROL_STEPPER_BACKWARD,
+  CONTROL_STEPPER_STOP,
+  CONTROL_ALL_STOP,
+};
+
+struct __attribute__((packed)) DreamEegEspNowPacket {
   uint32_t magic;
-  char board[16];
-  char event[16];
-  char button[8];
-  char action[16];
-  char color[16];
-  int32_t encoderDelta;
-  int32_t flowPosition;
-  uint32_t sequence;
-  uint32_t uptimeMs;
-};
-
-struct ThinkGearData {
-  bool seen;
+  uint16_t version;
+  uint8_t type;
+  uint8_t flags;
+  uint32_t seq;
+  uint32_t pcTimeMs;
+  uint32_t m5UptimeMs;
   uint8_t poorSignal;
   uint8_t attention;
   uint8_t meditation;
+  uint8_t reserved;
   uint32_t eegPower[8];
-  uint32_t packets;
-  uint32_t checksumErrors;
-  uint32_t lengthErrors;
-  uint32_t lastPacketMs;
+  uint16_t checksum;
 };
 
-enum ThinkGearParserState : uint8_t {
-  TG_WAIT_SYNC_1,
-  TG_WAIT_SYNC_2,
-  TG_READ_LENGTH,
-  TG_READ_PAYLOAD,
-  TG_READ_CHECKSUM,
+struct __attribute__((packed)) DreamMicStatusPacket {
+  uint32_t magic;
+  uint16_t version;
+  uint8_t type;
+  uint8_t flags;
+  uint32_t seq;
+  uint32_t uptimeMs;
+  uint32_t lastEegSeq;
+  uint32_t eegAgeMs;
+  uint32_t rxCount;
+  uint32_t dropCount;
+  uint32_t timeoutCount;
+  uint8_t poorSignal;
+  uint8_t attention;
+  uint8_t meditation;
+  uint8_t lightLevel;
+  uint8_t lightMode;
+  uint8_t stepperState;
+  uint8_t relayState;
+  uint8_t safetyState;
+  uint32_t controlRxCount;
+  uint8_t lastControlAction;
+  uint8_t manualLightEnabled;
+  uint8_t relayOutputEnabled;
+  uint8_t stepperOutputEnabled;
+  uint8_t systemEnabled;
+  uint16_t checksum;
 };
 
-uint8_t colorIndex = 0;
-uint32_t buttonEventCount = 0;
-uint32_t espNowSequence = 0;
-int32_t encoderStepCount = 0;
-unsigned long lastButtonRefresh = 0;
-unsigned long lastEncoderPoll = 0;
-unsigned long lastEncoderColorStep = 0;
-unsigned long lastEncoderStatusRefresh = 0;
-unsigned long lastI2CScan = 0;
-unsigned long lastUptimeRefresh = 0;
-unsigned long lastThinkGearDisplayRefresh = 0;
-unsigned long lastThinkGearBluetoothConnectAttempt = 0;
-char lastEvent[32] = "boot";
-bool facesEncoderReady = false;
-bool thinkGearBluetoothReady = false;
-bool thinkGearBluetoothConnected = false;
-uint32_t thinkGearBluetoothConnectAttempts = 0;
-uint32_t thinkGearBluetoothScanCount = 0;
-uint32_t thinkGearBluetoothFoundCount = 0;
-char thinkGearBluetoothStatus[40] = "bt boot";
-char thinkGearBluetoothScanLines[THINKGEAR_BLE_SCAN_LINES][48] = {};
-uint32_t facesEncoderFailCount = 0;
-uint8_t facesEncoderButton = 1;
-uint8_t lastFacesEncoderRawIncrement = 0;
-uint8_t activeEncoderI2CAddr = FACES_ENCODER_I2C_ADDR;
-uint8_t i2cScanResults[MAX_I2C_SCAN_RESULTS] = {};
-uint8_t i2cScanCount = 0;
-ThinkGearData thinkGear = {};
-ThinkGearParserState thinkGearParserState = TG_WAIT_SYNC_1;
-uint8_t thinkGearPayload[THINKGEAR_MAX_PAYLOAD] = {};
-uint8_t thinkGearPayloadLength = 0;
-uint8_t thinkGearPayloadIndex = 0;
-uint8_t thinkGearPayloadSum = 0;
+struct __attribute__((packed)) DreamControlEspNowPacket {
+  uint32_t magic;
+  uint16_t version;
+  uint8_t type;
+  uint8_t flags;
+  uint32_t seq;
+  uint32_t pcTimeMs;
+  uint32_t m5UptimeMs;
+  uint8_t action;
+  uint8_t reserved;
+  uint16_t arg1;
+  uint16_t arg2;
+  uint16_t arg3;
+  uint16_t arg4;
+  uint16_t checksum;
+};
 
-uint16_t currentLcdColor() {
-  const CRGB color = COLORS[colorIndex];
-  if (colorIndex == COLOR_COUNT - 1) {
-    return 0x4208;
+DreamEegEspNowPacket latestEegPacket = {};
+DreamMicStatusPacket latestMicStatus = {};
+
+char serialLine[SERIAL_LINE_BUFFER_SIZE] = {};
+uint8_t serialLineIndex = 0;
+uint32_t serialFrameCount = 0;
+uint32_t serialErrorCount = 0;
+uint32_t espNowSendCount = 0;
+uint32_t espNowSendFailCount = 0;
+uint32_t controlRxCount = 0;
+uint32_t controlSendCount = 0;
+uint32_t controlSendFailCount = 0;
+uint32_t localControlSeq = 0;
+uint32_t espNowLastSendMs = 0;
+uint32_t lastSerialFrameMs = 0;
+uint32_t lastMicStatusMs = 0;
+uint32_t lastDisplayRefreshMs = 0;
+uint32_t lastStatusPrintMs = 0;
+bool espNowReady = false;
+bool haveEeg = false;
+bool haveMicStatus = false;
+esp_now_send_status_t lastSendStatus = ESP_NOW_SEND_FAIL;
+
+uint16_t packetChecksum(const uint8_t *data, size_t length) {
+  uint32_t sum = 0;
+  for (size_t i = 0; i < length; i++) {
+    sum += data[i];
   }
-  return M5.Lcd.color565(color.r, color.g, color.b);
+  return static_cast<uint16_t>(sum & 0xFFFF);
 }
 
-void drawStaticScreen() {
-  M5.Lcd.fillScreen(0x0000);
-
-  M5.Lcd.fillRect(0, 0, 320, 32, 0x18E3);
-  M5.Lcd.setTextSize(2);
-  M5.Lcd.setTextColor(0xFFFF, 0x18E3);
-  M5.Lcd.setCursor(12, 8);
-  M5.Lcd.print("Bluetooth EEG RX");
+template <typename Packet>
+uint16_t calculatePacketChecksum(const Packet &packet) {
+  return packetChecksum(reinterpret_cast<const uint8_t *>(&packet), sizeof(Packet) - sizeof(packet.checksum));
 }
 
-void drawColorArea() {
-}
-
-void drawCountArea() {
-}
-
-void drawEncoderArea() {
-}
-
-void drawUptimeArea() {
-}
-
-void drawLastEventArea() {
-}
-
-void drawStatusValue(int y, bool pressed) {
-  M5.Lcd.setTextSize(2);
-  M5.Lcd.fillRect(70, y - 4, 86, 22, 0x0000);
-  M5.Lcd.setCursor(70, y);
-  M5.Lcd.setTextColor(pressed ? 0x07E0 : 0x8410, 0x0000);
-  M5.Lcd.print(pressed ? "DOWN" : "up  ");
-}
-
-void drawButtonStatusArea() {
-}
-
-void setThinkGearBluetoothStatus(const char *status) {
-  strncpy(thinkGearBluetoothStatus, status, sizeof(thinkGearBluetoothStatus) - 1);
-  thinkGearBluetoothStatus[sizeof(thinkGearBluetoothStatus) - 1] = '\0';
-}
-
-void clearThinkGearBluetoothScanLines() {
-  for (uint8_t i = 0; i < THINKGEAR_BLE_SCAN_LINES; i++) {
-    thinkGearBluetoothScanLines[i][0] = '\0';
+const char *lightModeName(uint8_t value) {
+  switch (value) {
+    case LIGHT_OFF: return "OFF";
+    case LIGHT_IDLE: return "IDLE";
+    case LIGHT_EEG_BLEND: return "EEG";
+    case LIGHT_SIGNAL_BAD: return "BAD";
+    case LIGHT_TIMEOUT: return "TIMEOUT";
+    case LIGHT_MANUAL: return "MANUAL";
+    default: return "?";
   }
 }
 
-void drawThinkGearArea() {
-  M5.Lcd.fillRect(0, 34, 320, 206, 0x0000);
-
-  if (!thinkGearBluetoothReady) {
-    M5.Lcd.setTextSize(2);
-    M5.Lcd.setTextColor(0xF800, 0x0000);
-    M5.Lcd.setCursor(18, 54);
-    M5.Lcd.print("BT init failed");
-    M5.Lcd.setTextSize(1);
-    M5.Lcd.setTextColor(0xC618, 0x0000);
-    M5.Lcd.setCursor(18, 88);
-    M5.Lcd.print("Check BLE support");
-    return;
+const char *stepperStateName(uint8_t value) {
+  switch (value) {
+    case STEPPER_DISABLED: return "DISABLED";
+    case STEPPER_IDLE: return "IDLE";
+    case STEPPER_MOVING: return "MOVING";
+    case STEPPER_BREATHING: return "BREATH";
+    case STEPPER_LIMITED: return "LIMIT";
+    case STEPPER_FAULT: return "FAULT";
+    default: return "?";
   }
-
-  if (!thinkGearBluetoothConnected) {
-    M5.Lcd.setTextSize(2);
-    M5.Lcd.setTextColor(0xFFE0, 0x0000);
-    M5.Lcd.setCursor(18, 42);
-    M5.Lcd.print(thinkGearBluetoothStatus);
-
-    M5.Lcd.setTextSize(1);
-    M5.Lcd.setTextColor(0xFFFF, 0x0000);
-    M5.Lcd.setCursor(18, 74);
-    M5.Lcd.print("Target:");
-    M5.Lcd.setCursor(76, 74);
-    M5.Lcd.print(THINKGEAR_BT_TARGET_NAME);
-
-    M5.Lcd.setCursor(18, 96);
-    M5.Lcd.printf("dev:%lu try:%lu",
-                  static_cast<unsigned long>(thinkGearBluetoothFoundCount),
-                  static_cast<unsigned long>(thinkGearBluetoothConnectAttempts));
-
-    M5.Lcd.setTextColor(0xC618, 0x0000);
-    M5.Lcd.setCursor(18, 116);
-    M5.Lcd.print("BLE devices:");
-    for (uint8_t i = 0; i < THINKGEAR_BLE_SCAN_LINES; i++) {
-      M5.Lcd.setCursor(18, 132 + i * 14);
-      M5.Lcd.print(thinkGearBluetoothScanLines[i][0] != '\0'
-                     ? thinkGearBluetoothScanLines[i]
-                     : "-");
-    }
-
-    M5.Lcd.setCursor(18, 222);
-    M5.Lcd.print("COM6 shows name, MAC, UUIDs");
-    return;
-  }
-
-  if (!thinkGear.seen) {
-    M5.Lcd.setTextSize(2);
-    M5.Lcd.setTextColor(0xFFE0, 0x0000);
-    M5.Lcd.setCursor(18, 46);
-    M5.Lcd.print("BT connected");
-    M5.Lcd.setCursor(18, 82);
-    M5.Lcd.print("Waiting data");
-
-    M5.Lcd.setTextSize(1);
-    M5.Lcd.setTextColor(0xC618, 0x0000);
-    M5.Lcd.setCursor(18, 118);
-    M5.Lcd.print("Waiting for AA AA packet header");
-    M5.Lcd.setCursor(18, 140);
-    M5.Lcd.print("If this stays here, device may be BLE");
-    return;
-  }
-
-  const uint32_t ageMs = millis() - thinkGear.lastPacketMs;
-  const uint16_t statusColor = ageMs < 2000 ? 0x07E0 : 0xFBE0;
-
-  M5.Lcd.setTextSize(2);
-  M5.Lcd.setTextColor(statusColor, 0x0000);
-  M5.Lcd.setCursor(18, 42);
-  M5.Lcd.print("Packet OK");
-
-  M5.Lcd.setTextColor(0xFFFF, 0x0000);
-  M5.Lcd.setCursor(18, 74);
-  M5.Lcd.printf("Signal: %3u", thinkGear.poorSignal);
-  M5.Lcd.setCursor(18, 106);
-  M5.Lcd.printf("Attention:%3u", thinkGear.attention);
-  M5.Lcd.setCursor(18, 138);
-  M5.Lcd.printf("Meditate: %3u", thinkGear.meditation);
-
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.setTextColor(0xC618, 0x0000);
-  M5.Lcd.setCursor(18, 176);
-  M5.Lcd.printf("packets:%lu  errors:%lu  age:%lus",
-                static_cast<unsigned long>(thinkGear.packets),
-                static_cast<unsigned long>(thinkGear.checksumErrors + thinkGear.lengthErrors),
-                static_cast<unsigned long>(ageMs / 1000));
-  M5.Lcd.setCursor(18, 198);
-  M5.Lcd.printf("delta:%lu theta:%lu alpha:%lu",
-                static_cast<unsigned long>(thinkGear.eegPower[0]),
-                static_cast<unsigned long>(thinkGear.eegPower[1]),
-                static_cast<unsigned long>(thinkGear.eegPower[2]));
-  M5.Lcd.setCursor(18, 216);
-  M5.Lcd.printf("beta:%lu gamma:%lu",
-                static_cast<unsigned long>(thinkGear.eegPower[4] + thinkGear.eegPower[5]),
-                static_cast<unsigned long>(thinkGear.eegPower[6] + thinkGear.eegPower[7]));
 }
 
-void drawDynamicAreas() {
-  drawThinkGearArea();
+const char *relayStateName(uint8_t value) {
+  switch (value) {
+    case RELAY_OFF: return "OFF";
+    case RELAY_ARMING: return "ARMING";
+    case RELAY_ON: return "ON";
+    case RELAY_COOLDOWN: return "COOL";
+    case RELAY_FAULT: return "FAULT";
+    default: return "?";
+  }
 }
 
-void setColor(uint8_t index) {
-  colorIndex = index % COLOR_COUNT;
-  leds[0] = COLORS[colorIndex];
-  FastLED.show();
-
-  Serial.print("COLOR=");
-  Serial.println(COLOR_NAMES[colorIndex]);
-  drawColorArea();
-  drawEncoderArea();
-  drawCountArea();
-  drawLastEventArea();
+const char *safetyStateName(uint8_t value) {
+  switch (value) {
+    case SAFETY_NORMAL: return "NORMAL";
+    case SAFETY_SIGNAL_BAD: return "SIGNAL";
+    case SAFETY_LINK_TIMEOUT: return "TIMEOUT";
+    case SAFETY_ESTOP: return "ESTOP";
+    case SAFETY_FAULT: return "FAULT";
+    default: return "?";
+  }
 }
 
-void setLastEvent(const char *eventName) {
-  strncpy(lastEvent, eventName, sizeof(lastEvent) - 1);
-  lastEvent[sizeof(lastEvent) - 1] = '\0';
+uint16_t ageColor(uint32_t ageMs, uint32_t warnMs, uint32_t badMs) {
+  if (ageMs < warnMs) {
+    return 0x07E0;
+  }
+  if (ageMs < badMs) {
+    return 0xFFE0;
+  }
+  return 0xF800;
+}
+
+uint16_t signalColor(uint8_t poorSignal) {
+  if (poorSignal <= 50) {
+    return 0x07E0;
+  }
+  if (poorSignal <= 120) {
+    return 0xFFE0;
+  }
+  return 0xF800;
 }
 
 void printMacAddress(const uint8_t *mac) {
@@ -312,652 +256,579 @@ void printMacAddress(const uint8_t *mac) {
   }
 }
 
-uint32_t readUint24BE(const uint8_t *bytes) {
-  return (static_cast<uint32_t>(bytes[0]) << 16) |
-         (static_cast<uint32_t>(bytes[1]) << 8) |
-         static_cast<uint32_t>(bytes[2]);
-}
-
-void printThinkGearData() {
-  Serial.print("EVENT=THINKGEAR_RX LEN=");
-  Serial.print(thinkGearPayloadLength);
-  Serial.print(" POOR_SIGNAL=");
-  Serial.print(thinkGear.poorSignal);
-  Serial.print(" ATTENTION=");
-  Serial.print(thinkGear.attention);
-  Serial.print(" MEDITATION=");
-  Serial.print(thinkGear.meditation);
-  Serial.print(" DELTA=");
-  Serial.print(thinkGear.eegPower[0]);
-  Serial.print(" THETA=");
-  Serial.print(thinkGear.eegPower[1]);
-  Serial.print(" LOW_ALPHA=");
-  Serial.print(thinkGear.eegPower[2]);
-  Serial.print(" HIGH_ALPHA=");
-  Serial.print(thinkGear.eegPower[3]);
-  Serial.print(" LOW_BETA=");
-  Serial.print(thinkGear.eegPower[4]);
-  Serial.print(" HIGH_BETA=");
-  Serial.print(thinkGear.eegPower[5]);
-  Serial.print(" LOW_GAMMA=");
-  Serial.print(thinkGear.eegPower[6]);
-  Serial.print(" MID_GAMMA=");
-  Serial.print(thinkGear.eegPower[7]);
-  Serial.print(" PACKETS=");
-  Serial.println(thinkGear.packets);
-}
-
-void parseThinkGearPayload(const uint8_t *payload, uint8_t payloadLength) {
-  uint8_t index = 0;
-
-  while (index < payloadLength) {
-    const uint8_t code = payload[index++];
-    uint8_t valueLength = 1;
-
-    if (code >= 0x80) {
-      if (index >= payloadLength) {
-        return;
-      }
-      valueLength = payload[index++];
-    }
-
-    if (index + valueLength > payloadLength) {
-      return;
-    }
-
-    switch (code) {
-      case 0x02:
-        if (valueLength == 1) {
-          thinkGear.poorSignal = payload[index];
-        }
-        break;
-      case 0x04:
-        if (valueLength == 1) {
-          thinkGear.attention = payload[index];
-        }
-        break;
-      case 0x05:
-        if (valueLength == 1) {
-          thinkGear.meditation = payload[index];
-        }
-        break;
-      case 0x83:
-        if (valueLength >= 24) {
-          for (uint8_t i = 0; i < 8; i++) {
-            thinkGear.eegPower[i] = readUint24BE(&payload[index + i * 3]);
-          }
-        }
-        break;
-      default:
-        break;
-    }
-
-    index += valueLength;
+bool readCsvNumber(char *&cursor, uint32_t &value) {
+  while (*cursor == ' ' || *cursor == '\t' || *cursor == ',') {
+    cursor++;
   }
 
-  thinkGear.seen = true;
-  thinkGear.packets++;
-  thinkGear.lastPacketMs = millis();
-  setLastEvent("tg rx");
-  printThinkGearData();
-  drawThinkGearArea();
-  drawLastEventArea();
-}
-
-void processThinkGearByte(uint8_t value) {
-  switch (thinkGearParserState) {
-    case TG_WAIT_SYNC_1:
-      if (value == 0xAA) {
-        thinkGearParserState = TG_WAIT_SYNC_2;
-      }
-      break;
-
-    case TG_WAIT_SYNC_2:
-      thinkGearParserState = value == 0xAA ? TG_READ_LENGTH : TG_WAIT_SYNC_1;
-      break;
-
-    case TG_READ_LENGTH:
-      if (value == 0 || value > THINKGEAR_MAX_PAYLOAD) {
-        thinkGear.lengthErrors++;
-        thinkGearParserState = value == 0xAA ? TG_WAIT_SYNC_2 : TG_WAIT_SYNC_1;
-        return;
-      }
-      thinkGearPayloadLength = value;
-      thinkGearPayloadIndex = 0;
-      thinkGearPayloadSum = 0;
-      thinkGearParserState = TG_READ_PAYLOAD;
-      break;
-
-    case TG_READ_PAYLOAD:
-      thinkGearPayload[thinkGearPayloadIndex++] = value;
-      thinkGearPayloadSum += value;
-      if (thinkGearPayloadIndex >= thinkGearPayloadLength) {
-        thinkGearParserState = TG_READ_CHECKSUM;
-      }
-      break;
-
-    case TG_READ_CHECKSUM: {
-      const uint8_t expectedChecksum = ~thinkGearPayloadSum;
-      if (value == expectedChecksum) {
-        parseThinkGearPayload(thinkGearPayload, thinkGearPayloadLength);
-      } else {
-        thinkGear.checksumErrors++;
-        Serial.print("EVENT=THINKGEAR_CHECKSUM_FAIL EXPECTED=0x");
-        if (expectedChecksum < 0x10) {
-          Serial.print("0");
-        }
-        Serial.print(expectedChecksum, HEX);
-        Serial.print(" GOT=0x");
-        if (value < 0x10) {
-          Serial.print("0");
-        }
-        Serial.println(value, HEX);
-        drawThinkGearArea();
-      }
-      thinkGearParserState = TG_WAIT_SYNC_1;
-      break;
-    }
-  }
-}
-
-void initThinkGearBluetooth() {
-  clearThinkGearBluetoothScanLines();
-  setThinkGearBluetoothStatus("BLE init");
-
-  BLEDevice::init("M5-BLE-SCAN");
-  bleScan = BLEDevice::getScan();
-  if (bleScan == nullptr) {
-    thinkGearBluetoothReady = false;
-    setThinkGearBluetoothStatus("BLE init failed");
-    Serial.println("EVENT=THINKGEAR_BLE_INIT_FAIL");
-    return;
-  }
-
-  bleScan->setActiveScan(true);
-  bleScan->setInterval(100);
-  bleScan->setWindow(99);
-
-  thinkGearBluetoothReady = true;
-  thinkGearBluetoothConnected = false;
-  setThinkGearBluetoothStatus("BLE scan ready");
-  Serial.println("EVENT=THINKGEAR_BLE_READY MODE=SCAN");
-}
-
-void rememberThinkGearBluetoothDevice(uint8_t lineIndex, BLEAdvertisedDevice &device) {
-  if (lineIndex >= THINKGEAR_BLE_SCAN_LINES) {
-    return;
-  }
-
-  const std::string name = device.haveName() ? device.getName() : std::string("(no name)");
-  snprintf(thinkGearBluetoothScanLines[lineIndex],
-           sizeof(thinkGearBluetoothScanLines[lineIndex]),
-           "%u:%s %ddB",
-           lineIndex + 1,
-           name.c_str(),
-           device.getRSSI());
-}
-
-bool deviceNameMatchesThinkGearTarget(BLEAdvertisedDevice &device) {
-  if (!device.haveName()) {
+  if (*cursor < '0' || *cursor > '9') {
     return false;
   }
 
-  const String deviceName = String(device.getName().c_str());
-  return deviceName.equals(THINKGEAR_BT_TARGET_NAME) ||
-         deviceName.indexOf(THINKGEAR_BT_TARGET_NAME) >= 0 ||
-         String(THINKGEAR_BT_TARGET_NAME).indexOf(deviceName) >= 0;
+  char *endPtr = cursor;
+  value = strtoul(cursor, &endPtr, 10);
+  cursor = endPtr;
+  return true;
 }
 
-bool scanAndConnectThinkGearBluetooth() {
-  thinkGearBluetoothScanCount++;
-  thinkGearBluetoothFoundCount = 0;
-  clearThinkGearBluetoothScanLines();
-  setThinkGearBluetoothStatus("BLE scanning");
-  drawThinkGearArea();
+bool readCsvToken(char *&cursor, char *token, size_t tokenSize) {
+  while (*cursor == ' ' || *cursor == '\t' || *cursor == ',') {
+    cursor++;
+  }
 
-  Serial.print("EVENT=THINKGEAR_BLE_SCAN_START SECONDS=");
-  Serial.print(THINKGEAR_BLE_SCAN_SECONDS);
-  Serial.print(" TARGET=");
-  Serial.println(THINKGEAR_BT_TARGET_NAME);
-
-  if (bleScan == nullptr) {
-    setThinkGearBluetoothStatus("BLE scan fail");
-    Serial.println("EVENT=THINKGEAR_BLE_SCAN_FAIL NO_SCANNER");
-    drawThinkGearArea();
+  if (*cursor == '\0' || tokenSize == 0) {
     return false;
   }
 
-  BLEScanResults scanResults = bleScan->start(THINKGEAR_BLE_SCAN_SECONDS, false);
-  thinkGearBluetoothFoundCount = scanResults.getCount();
-  Serial.print("EVENT=THINKGEAR_BLE_SCAN_DONE COUNT=");
-  Serial.println(static_cast<int>(thinkGearBluetoothFoundCount));
-
-  bool targetFound = false;
-  for (int i = 0; i < scanResults.getCount(); i++) {
-    BLEAdvertisedDevice device = scanResults.getDevice(i);
-
-    Serial.print("EVENT=THINKGEAR_BLE_DEVICE INDEX=");
-    Serial.print(i);
-    Serial.print(" INFO=");
-    Serial.println(device.toString().c_str());
-
-    if (i < THINKGEAR_BLE_SCAN_LINES) {
-      rememberThinkGearBluetoothDevice(static_cast<uint8_t>(i), device);
+  size_t index = 0;
+  while (*cursor != '\0' && *cursor != ',') {
+    if (index + 1 < tokenSize) {
+      token[index++] = *cursor;
     }
+    cursor++;
+  }
+  token[index] = '\0';
+  return index > 0;
+}
 
-    if (!targetFound && deviceNameMatchesThinkGearTarget(device)) {
-      targetFound = true;
+uint8_t controlActionFromName(const char *actionName) {
+  if (strcmp(actionName, "SYSTEM_ENABLE") == 0) {
+    return CONTROL_SYSTEM_ENABLE;
+  }
+  if (strcmp(actionName, "SYSTEM_DISABLE") == 0) {
+    return CONTROL_SYSTEM_DISABLE;
+  }
+  if (strcmp(actionName, "LIGHT_AUTO") == 0) {
+    return CONTROL_LIGHT_AUTO;
+  }
+  if (strcmp(actionName, "LIGHT_COLOR") == 0) {
+    return CONTROL_LIGHT_COLOR;
+  }
+  if (strcmp(actionName, "LIGHT_OFF") == 0) {
+    return CONTROL_LIGHT_OFF;
+  }
+  if (strcmp(actionName, "RELAY_ON") == 0) {
+    return CONTROL_RELAY_ON;
+  }
+  if (strcmp(actionName, "RELAY_OFF") == 0) {
+    return CONTROL_RELAY_OFF;
+  }
+  if (strcmp(actionName, "STEPPER_FORWARD") == 0) {
+    return CONTROL_STEPPER_FORWARD;
+  }
+  if (strcmp(actionName, "STEPPER_BACKWARD") == 0) {
+    return CONTROL_STEPPER_BACKWARD;
+  }
+  if (strcmp(actionName, "STEPPER_STOP") == 0) {
+    return CONTROL_STEPPER_STOP;
+  }
+  if (strcmp(actionName, "ALL_STOP") == 0) {
+    return CONTROL_ALL_STOP;
+  }
+  return CONTROL_NONE;
+}
+
+bool parseEegLine(char *line, DreamEegEspNowPacket &packet) {
+  if (strncmp(line, "EEG,", 4) != 0) {
+    return false;
+  }
+
+  char *cursor = line + 4;
+  uint32_t values[13] = {};
+  for (uint8_t i = 0; i < 13; i++) {
+    if (!readCsvNumber(cursor, values[i])) {
+      return false;
     }
   }
 
-  bleScan->clearResults();
+  memset(&packet, 0, sizeof(packet));
+  packet.magic = DREAM_PACKET_MAGIC;
+  packet.version = DREAM_PROTOCOL_VERSION;
+  packet.type = DREAM_PACKET_EEG;
+  packet.seq = values[0];
+  packet.pcTimeMs = values[1];
+  packet.m5UptimeMs = millis();
+  packet.poorSignal = static_cast<uint8_t>(constrain(static_cast<int>(values[2]), 0, 255));
+  packet.attention = static_cast<uint8_t>(constrain(static_cast<int>(values[3]), 0, 100));
+  packet.meditation = static_cast<uint8_t>(constrain(static_cast<int>(values[4]), 0, 100));
+  packet.flags = EEG_FLAG_CHECKSUM_OK;
+  if (packet.poorSignal <= 120) {
+    packet.flags |= EEG_FLAG_SIGNAL_OK;
+  }
 
-  setThinkGearBluetoothStatus(targetFound ? "BLE target seen" : "BLE target missing");
-  Serial.println(targetFound ? "EVENT=THINKGEAR_BLE_TARGET_SEEN" : "EVENT=THINKGEAR_BLE_TARGET_NOT_FOUND");
-  drawThinkGearArea();
-  return false;
+  for (uint8_t i = 0; i < 8; i++) {
+    packet.eegPower[i] = values[5 + i];
+  }
+
+  packet.checksum = calculatePacketChecksum(packet);
+  return true;
 }
 
-void updateThinkGearBluetoothConnection() {
-  if (!thinkGearBluetoothReady) {
-    thinkGearBluetoothConnected = false;
+bool parseControlLine(char *line, DreamControlEspNowPacket &packet) {
+  if (strncmp(line, "CMD,", 4) != 0) {
+    return false;
+  }
+
+  char *cursor = line + 4;
+  uint32_t seq = 0;
+  uint32_t pcTimeMs = 0;
+  char actionName[28] = {};
+  uint32_t args[4] = {};
+
+  if (!readCsvNumber(cursor, seq) ||
+      !readCsvNumber(cursor, pcTimeMs) ||
+      !readCsvToken(cursor, actionName, sizeof(actionName))) {
+    return false;
+  }
+
+  const uint8_t action = controlActionFromName(actionName);
+  if (action == CONTROL_NONE) {
+    return false;
+  }
+
+  for (uint8_t i = 0; i < 4; i++) {
+    if (!readCsvNumber(cursor, args[i])) {
+      args[i] = 0;
+    }
+  }
+
+  memset(&packet, 0, sizeof(packet));
+  packet.magic = DREAM_PACKET_MAGIC;
+  packet.version = DREAM_PROTOCOL_VERSION;
+  packet.type = DREAM_PACKET_CONTROL;
+  packet.seq = seq;
+  packet.pcTimeMs = pcTimeMs;
+  packet.m5UptimeMs = millis();
+  packet.action = action;
+  packet.arg1 = static_cast<uint16_t>(constrain(static_cast<int>(args[0]), 0, 65535));
+  packet.arg2 = static_cast<uint16_t>(constrain(static_cast<int>(args[1]), 0, 65535));
+  packet.arg3 = static_cast<uint16_t>(constrain(static_cast<int>(args[2]), 0, 65535));
+  packet.arg4 = static_cast<uint16_t>(constrain(static_cast<int>(args[3]), 0, 65535));
+  packet.checksum = calculatePacketChecksum(packet);
+  return true;
+}
+
+void sendEegToMicroduino() {
+  if (!espNowReady || !haveEeg) {
     return;
   }
 
-  thinkGearBluetoothConnected = false;
+  latestEegPacket.m5UptimeMs = millis();
+  latestEegPacket.checksum = 0;
+  latestEegPacket.checksum = calculatePacketChecksum(latestEegPacket);
 
-  const unsigned long now = millis();
-  if (thinkGearBluetoothConnectAttempts > 0 &&
-      now - lastThinkGearBluetoothConnectAttempt < THINKGEAR_BLE_RESCAN_MS) {
+  const esp_err_t result = esp_now_send(BROADCAST_MAC,
+                                        reinterpret_cast<const uint8_t *>(&latestEegPacket),
+                                        sizeof(latestEegPacket));
+  if (result == ESP_OK) {
+    espNowSendCount++;
+    espNowLastSendMs = millis();
+  } else {
+    espNowSendFailCount++;
+  }
+}
+
+void sendControlToMicroduino(DreamControlEspNowPacket &packet) {
+  if (!espNowReady) {
+    controlSendFailCount++;
     return;
   }
 
-  lastThinkGearBluetoothConnectAttempt = now;
-  thinkGearBluetoothConnectAttempts++;
+  packet.m5UptimeMs = millis();
+  packet.checksum = 0;
+  packet.checksum = calculatePacketChecksum(packet);
 
-  Serial.print("EVENT=THINKGEAR_BT_CONNECT_ATTEMPT TARGET=");
-  Serial.print(THINKGEAR_BT_TARGET_NAME);
-  Serial.print(" ATTEMPT=");
-  Serial.println(thinkGearBluetoothConnectAttempts);
-
-  scanAndConnectThinkGearBluetooth();
-}
-
-void handleThinkGearBluetooth() {
-  updateThinkGearBluetoothConnection();
-
-  if (millis() - lastThinkGearDisplayRefresh >= THINKGEAR_DISPLAY_REFRESH_MS) {
-    lastThinkGearDisplayRefresh = millis();
-    drawThinkGearArea();
+  const esp_err_t result = esp_now_send(BROADCAST_MAC,
+                                        reinterpret_cast<const uint8_t *>(&packet),
+                                        sizeof(packet));
+  if (result == ESP_OK) {
+    controlSendCount++;
+    espNowSendCount++;
+    espNowLastSendMs = millis();
+    Serial.print("EVENT=CONTROL_TX SEQ=");
+    Serial.print(packet.seq);
+    Serial.print(" ACTION=");
+    Serial.println(packet.action);
+  } else {
+    controlSendFailCount++;
+    espNowSendFailCount++;
+    Serial.print("EVENT=CONTROL_TX_FAIL SEQ=");
+    Serial.print(packet.seq);
+    Serial.print(" ERR=");
+    Serial.println(result);
   }
 }
 
-void onDataSent(const uint8_t *macAddress, esp_now_send_status_t status) {
-  Serial.print("EVENT=ESPNOW_SEND_RESULT TARGET=");
-  printMacAddress(macAddress);
-  Serial.print(" STATUS=");
-  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
+void sendLocalControl(uint8_t action, uint16_t arg1 = 0, uint16_t arg2 = 0, uint16_t arg3 = 0, uint16_t arg4 = 0) {
+  DreamControlEspNowPacket packet = {};
+  packet.magic = DREAM_PACKET_MAGIC;
+  packet.version = DREAM_PROTOCOL_VERSION;
+  packet.type = DREAM_PACKET_CONTROL;
+  packet.seq = localControlSeq++;
+  packet.pcTimeMs = millis();
+  packet.m5UptimeMs = millis();
+  packet.action = action;
+  packet.arg1 = arg1;
+  packet.arg2 = arg2;
+  packet.arg3 = arg3;
+  packet.arg4 = arg4;
+  packet.checksum = calculatePacketChecksum(packet);
+  controlRxCount++;
+  sendControlToMicroduino(packet);
 }
 
-void initEspNowSender() {
+void handleButtons() {
+  if (M5.BtnA.wasPressed()) {
+    sendLocalControl(CONTROL_SYSTEM_ENABLE);
+    Serial.println("EVENT=LOCAL_CONTROL ACTION=SYSTEM_ENABLE SOURCE=BTN_A");
+  }
+  if (M5.BtnC.wasPressed()) {
+    sendLocalControl(CONTROL_SYSTEM_DISABLE);
+    Serial.println("EVENT=LOCAL_CONTROL ACTION=SYSTEM_DISABLE SOURCE=BTN_C");
+  }
+  if (M5.BtnB.wasPressed()) {
+    sendLocalControl(CONTROL_ALL_STOP);
+    Serial.println("EVENT=LOCAL_CONTROL ACTION=ALL_STOP SOURCE=BTN_B");
+  }
+}
+
+void processSerialLine() {
+  serialLine[serialLineIndex] = '\0';
+  if (serialLineIndex == 0) {
+    return;
+  }
+
+  DreamEegEspNowPacket packet = {};
+  if (parseEegLine(serialLine, packet)) {
+    latestEegPacket = packet;
+    serialFrameCount++;
+    lastSerialFrameMs = millis();
+    haveEeg = true;
+
+    Serial.print("EVENT=SERIAL_EEG_RX SEQ=");
+    Serial.print(latestEegPacket.seq);
+    Serial.print(" ATTENTION=");
+    Serial.print(latestEegPacket.attention);
+    Serial.print(" MEDITATION=");
+    Serial.print(latestEegPacket.meditation);
+    Serial.print(" POOR_SIGNAL=");
+    Serial.println(latestEegPacket.poorSignal);
+
+    sendEegToMicroduino();
+    return;
+  }
+
+  DreamControlEspNowPacket controlPacket = {};
+  if (parseControlLine(serialLine, controlPacket)) {
+    controlRxCount++;
+    Serial.print("EVENT=SERIAL_CMD_RX SEQ=");
+    Serial.print(controlPacket.seq);
+    Serial.print(" ACTION=");
+    Serial.println(controlPacket.action);
+    sendControlToMicroduino(controlPacket);
+    return;
+  }
+
+  serialErrorCount++;
+  Serial.print("EVENT=SERIAL_PARSE_FAIL TEXT=");
+  Serial.println(serialLine);
+}
+
+void handleSerialInput() {
+  while (Serial.available() > 0) {
+    const char value = static_cast<char>(Serial.read());
+    if (value == '\r') {
+      continue;
+    }
+
+    if (value == '\n') {
+      processSerialLine();
+      serialLineIndex = 0;
+      continue;
+    }
+
+    if (value < 0x20 || value > 0x7E) {
+      continue;
+    }
+
+    if (serialLineIndex < SERIAL_LINE_BUFFER_SIZE - 1) {
+      serialLine[serialLineIndex++] = value;
+    } else {
+      serialLineIndex = 0;
+      serialErrorCount++;
+      Serial.println("EVENT=SERIAL_LINE_TOO_LONG");
+    }
+  }
+}
+
+void onEspNowSent(const uint8_t *macAddress, esp_now_send_status_t status) {
+  lastSendStatus = status;
+  if (status != ESP_NOW_SEND_SUCCESS) {
+    espNowSendFailCount++;
+  }
+}
+
+void handleEspNowReceive(const uint8_t *macAddress, const uint8_t *data, int dataLength) {
+  if (dataLength != static_cast<int>(sizeof(DreamMicStatusPacket))) {
+    return;
+  }
+
+  DreamMicStatusPacket packet = {};
+  memcpy(&packet, data, sizeof(packet));
+  if (packet.magic != DREAM_PACKET_MAGIC ||
+      packet.version != DREAM_PROTOCOL_VERSION ||
+      packet.type != DREAM_PACKET_MIC_STATUS) {
+    return;
+  }
+
+  const uint16_t expectedChecksum = calculatePacketChecksum(packet);
+  if (packet.checksum != expectedChecksum) {
+    return;
+  }
+
+  latestMicStatus = packet;
+  haveMicStatus = true;
+  lastMicStatusMs = millis();
+}
+
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+void onEspNowReceive(const esp_now_recv_info_t *recvInfo, const uint8_t *data, int dataLength) {
+  const uint8_t *macAddress = recvInfo == nullptr ? nullptr : recvInfo->src_addr;
+  handleEspNowReceive(macAddress, data, dataLength);
+}
+#else
+void onEspNowReceive(const uint8_t *macAddress, const uint8_t *data, int dataLength) {
+  handleEspNowReceive(macAddress, data, dataLength);
+}
+#endif
+
+void initEspNow() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
+  esp_wifi_set_ps(WIFI_PS_NONE);
   esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
 
-  Serial.print("LOCAL_WIFI_MAC=");
+  Serial.print("EVENT=WIFI_STA_READY MAC=");
   Serial.println(WiFi.macAddress());
-  Serial.print("ESPNOW_CHANNEL=");
+  Serial.print("EVENT=ESPNOW_CHANNEL VALUE=");
   Serial.println(ESPNOW_CHANNEL);
 
   const esp_err_t initResult = esp_now_init();
   if (initResult != ESP_OK) {
     Serial.print("EVENT=ESPNOW_INIT_FAIL ERR=");
     Serial.println(initResult);
+    espNowReady = false;
     return;
   }
 
-  esp_now_register_send_cb(onDataSent);
+  esp_now_register_send_cb(onEspNowSent);
+  esp_now_register_recv_cb(onEspNowReceive);
 
   esp_now_peer_info_t peerInfo = {};
-  memcpy(peerInfo.peer_addr, BROADCAST_ADDRESS, sizeof(BROADCAST_ADDRESS));
+  memcpy(peerInfo.peer_addr, BROADCAST_MAC, sizeof(BROADCAST_MAC));
   peerInfo.channel = ESPNOW_CHANNEL;
+  peerInfo.ifidx = WIFI_IF_STA;
   peerInfo.encrypt = false;
 
   const esp_err_t peerResult = esp_now_add_peer(&peerInfo);
   if (peerResult != ESP_OK && peerResult != ESP_ERR_ESPNOW_EXIST) {
     Serial.print("EVENT=ESPNOW_ADD_PEER_FAIL ERR=");
     Serial.println(peerResult);
+    espNowReady = false;
     return;
   }
 
-  Serial.println("EVENT=ESPNOW_SENDER_READY MODE=BROADCAST");
+  espNowReady = true;
+  Serial.println("EVENT=ESPNOW_READY MODE=BROADCAST");
 }
 
-void sendEspNowControl(const char *eventType, const char *button, const char *action, int32_t encoderDelta) {
-  EspNowControlPacket packet = {};
-  packet.magic = PACKET_MAGIC;
-  strncpy(packet.board, ESPNOW_BOARD_NAME, sizeof(packet.board) - 1);
-  strncpy(packet.event, eventType, sizeof(packet.event) - 1);
-  strncpy(packet.button, button, sizeof(packet.button) - 1);
-  strncpy(packet.action, action, sizeof(packet.action) - 1);
-  strncpy(packet.color, COLOR_NAMES[colorIndex], sizeof(packet.color) - 1);
-  packet.encoderDelta = encoderDelta;
-  packet.flowPosition = encoderStepCount;
-  packet.sequence = ++espNowSequence;
-  packet.uptimeMs = millis();
-
-  const esp_err_t result = esp_now_send(BROADCAST_ADDRESS, reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
-
-  Serial.print("EVENT=ESPNOW_TX BUTTON=");
-  Serial.print(button);
-  Serial.print(" ACTION=");
-  Serial.print(action);
-  Serial.print(" COLOR=");
-  Serial.print(packet.color);
-  Serial.print(" ENCODER_DELTA=");
-  Serial.print(packet.encoderDelta);
-  Serial.print(" ENCODER_POS=");
-  Serial.print(packet.flowPosition);
-  Serial.print(" SEQ=");
-  Serial.print(packet.sequence);
-  Serial.print(" RESULT=");
-  Serial.println(result == ESP_OK ? "QUEUED" : "ERROR");
+void drawStaticScreen() {
+  M5.Lcd.fillScreen(0x0000);
+  M5.Lcd.fillRect(0, 0, 320, 28, 0x18E3);
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.setTextColor(0xFFFF, 0x18E3);
+  M5.Lcd.setCursor(8, 6);
+  M5.Lcd.print("Dream M5 Gateway");
 }
 
-void sendEncoderColorStep(int32_t delta, const char *source) {
-  encoderStepCount += delta;
-  buttonEventCount++;
+void drawDashboard() {
+  const uint32_t now = millis();
+  const uint32_t serialAgeMs = haveEeg ? now - lastSerialFrameMs : 0xFFFFFFFFUL;
+  const uint32_t micAgeMs = haveMicStatus ? now - lastMicStatusMs : 0xFFFFFFFFUL;
+  const uint32_t alphaPower = latestEegPacket.eegPower[2] + latestEegPacket.eegPower[3];
+  const uint32_t betaPower = latestEegPacket.eegPower[4] + latestEegPacket.eegPower[5];
+  const uint32_t gammaPower = latestEegPacket.eegPower[6] + latestEegPacket.eegPower[7];
 
-  if (delta > 0) {
-    setColor((colorIndex + 1) % COLOR_COUNT);
-    setLastEvent("enc next");
-    sendEspNowControl("ENCODER_ROTATE", "ENC", "COLOR_NEXT", delta);
-    Serial.print("EVENT=ENCODER_ROTATE DIR=CW ENCODER_POS=");
+  M5.Lcd.fillRect(0, 30, 320, 210, 0x0000);
+  M5.Lcd.setTextSize(1);
+
+  M5.Lcd.setTextColor(ageColor(serialAgeMs, 500, SERIAL_TIMEOUT_MS), 0x0000);
+  M5.Lcd.setCursor(8, 36);
+  M5.Lcd.printf("USB:%s age:%lums frames:%lu err:%lu",
+                haveEeg && serialAgeMs < SERIAL_TIMEOUT_MS ? "OK" : "WAIT",
+                haveEeg ? static_cast<unsigned long>(serialAgeMs) : 0,
+                static_cast<unsigned long>(serialFrameCount),
+                static_cast<unsigned long>(serialErrorCount));
+
+  M5.Lcd.setTextColor(lastSendStatus == ESP_NOW_SEND_SUCCESS ? 0x07E0 : 0xFFE0, 0x0000);
+  M5.Lcd.setCursor(8, 52);
+  M5.Lcd.printf("ESP:%s tx:%lu fail:%lu ch:%u",
+                espNowReady ? (lastSendStatus == ESP_NOW_SEND_SUCCESS ? "OK" : "SEND") : "OFF",
+                static_cast<unsigned long>(espNowSendCount),
+                static_cast<unsigned long>(espNowSendFailCount),
+                ESPNOW_CHANNEL);
+
+  M5.Lcd.setTextColor(signalColor(latestEegPacket.poorSignal), 0x0000);
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.setCursor(8, 76);
+  M5.Lcd.printf("Signal:%3u", haveEeg ? latestEegPacket.poorSignal : 255);
+
+  M5.Lcd.setTextColor(0xFFFF, 0x0000);
+  M5.Lcd.setCursor(8, 104);
+  M5.Lcd.printf("Att:%3u  Med:%3u",
+                haveEeg ? latestEegPacket.attention : 0,
+                haveEeg ? latestEegPacket.meditation : 0);
+
+  M5.Lcd.setTextSize(1);
+  M5.Lcd.setCursor(8, 136);
+  M5.Lcd.printf("seq:%lu pc:%lums",
+                static_cast<unsigned long>(latestEegPacket.seq),
+                static_cast<unsigned long>(latestEegPacket.pcTimeMs));
+  M5.Lcd.setCursor(8, 152);
+  M5.Lcd.printf("delta:%lu theta:%lu alpha:%lu",
+                static_cast<unsigned long>(latestEegPacket.eegPower[0]),
+                static_cast<unsigned long>(latestEegPacket.eegPower[1]),
+                static_cast<unsigned long>(alphaPower));
+  M5.Lcd.setCursor(8, 168);
+  M5.Lcd.printf("beta:%lu gamma:%lu",
+                static_cast<unsigned long>(betaPower),
+                static_cast<unsigned long>(gammaPower));
+
+  M5.Lcd.setTextColor(ageColor(micAgeMs, 1000, MIC_STATUS_TIMEOUT_MS), 0x0000);
+  M5.Lcd.setCursor(8, 190);
+  M5.Lcd.printf("MIC:%s age:%lums rx:%lu drop:%lu",
+                haveMicStatus && micAgeMs < MIC_STATUS_TIMEOUT_MS ? "OK" : "WAIT",
+                haveMicStatus ? static_cast<unsigned long>(micAgeMs) : 0,
+                static_cast<unsigned long>(latestMicStatus.rxCount),
+                static_cast<unsigned long>(latestMicStatus.dropCount));
+
+  M5.Lcd.setTextColor(0xFFFF, 0x0000);
+  M5.Lcd.setCursor(8, 206);
+  if (haveMicStatus && micAgeMs < MIC_STATUS_TIMEOUT_MS) {
+    M5.Lcd.printf("Light:%s %u  Step:%s",
+                  lightModeName(latestMicStatus.lightMode),
+                  latestMicStatus.lightLevel,
+                  stepperStateName(latestMicStatus.stepperState));
   } else {
-    setColor((colorIndex + COLOR_COUNT - 1) % COLOR_COUNT);
-    setLastEvent("enc ccw");
-    sendEspNowControl("ENCODER_ROTATE", "ENC", "COLOR_PREVIOUS", delta);
-    Serial.print("EVENT=ENCODER_ROTATE DIR=CCW ENCODER_POS=");
+    M5.Lcd.print("Light:WAIT 0  Step:WAIT");
+  }
+  M5.Lcd.setCursor(8, 222);
+  if (haveMicStatus && micAgeMs < MIC_STATUS_TIMEOUT_MS) {
+    M5.Lcd.printf("Relay:%s  Safety:%s",
+                  relayStateName(latestMicStatus.relayState),
+                  safetyStateName(latestMicStatus.safetyState));
+  } else {
+    M5.Lcd.print("Relay:WAIT  Safety:WAIT");
   }
 
-  Serial.print(encoderStepCount);
-  Serial.print(" SRC=");
-  Serial.println(source);
-  drawEncoderArea();
-  drawCountArea();
-  drawLastEventArea();
+  M5.Lcd.setCursor(212, 222);
+  M5.Lcd.setTextColor(haveMicStatus && latestMicStatus.systemEnabled ? 0x07E0 : 0xF800, 0x0000);
+  M5.Lcd.printf("SYS:%s", haveMicStatus && latestMicStatus.systemEnabled ? "ON" : "OFF");
 }
 
-bool i2cDevicePresent(uint8_t address) {
-  Wire.beginTransmission(address);
-  return Wire.endTransmission() == 0;
-}
-
-void scanI2CBus() {
-  Serial.println("EVENT=I2C_SCAN_START");
-  i2cScanCount = 0;
-
-  for (uint8_t address = 1; address < 127; address++) {
-    if (i2cDevicePresent(address)) {
-      if (i2cScanCount < MAX_I2C_SCAN_RESULTS) {
-        i2cScanResults[i2cScanCount] = address;
-      }
-      i2cScanCount++;
-
-      Serial.print("EVENT=I2C_DEVICE_FOUND ADDR=0x");
-      if (address < 0x10) {
-        Serial.print("0");
-      }
-      Serial.println(address, HEX);
-    }
-  }
-
-  Serial.print("EVENT=I2C_SCAN_DONE FOUND=");
-  Serial.println(i2cScanCount);
-}
-
-bool chooseEncoderI2CAddress() {
-  if (i2cDevicePresent(FACES_ENCODER_I2C_ADDR)) {
-    activeEncoderI2CAddr = FACES_ENCODER_I2C_ADDR;
-    return true;
-  }
-
-  if (i2cDevicePresent(FALLBACK_ENCODER_I2C_ADDR)) {
-    activeEncoderI2CAddr = FALLBACK_ENCODER_I2C_ADDR;
-    return true;
-  }
-
-  activeEncoderI2CAddr = FACES_ENCODER_I2C_ADDR;
-  return false;
-}
-
-bool readFacesEncoder(uint8_t &rawIncrement, uint8_t &buttonState) {
-  const uint8_t bytesRequested = 3;
-  const uint8_t bytesReceived = Wire.requestFrom(activeEncoderI2CAddr, bytesRequested);
-
-  if (bytesReceived < 2) {
-    while (Wire.available()) {
-      Wire.read();
-    }
-    return false;
-  }
-
-  rawIncrement = Wire.read();
-  buttonState = Wire.read();
-
-  while (Wire.available()) {
-    Wire.read();
-  }
-
-  return true;
-}
-
-int32_t decodeFacesEncoderDelta(uint8_t rawIncrement) {
-  if (rawIncrement == 0) {
-    return 0;
-  }
-
-  if (rawIncrement > 127) {
-    return -static_cast<int32_t>(256 - rawIncrement);
-  }
-
-  return rawIncrement;
-}
-
-void handleEncoder() {
-  if (millis() - lastEncoderPoll < ENCODER_POLL_MS) {
-    return;
-  }
-  lastEncoderPoll = millis();
-
-  uint8_t rawIncrement = 0;
-  uint8_t buttonState = facesEncoderButton;
-  if (!readFacesEncoder(rawIncrement, buttonState)) {
-    facesEncoderFailCount++;
-    lastFacesEncoderRawIncrement = 0;
-
-    if (facesEncoderReady) {
-      facesEncoderReady = false;
-      setLastEvent("i2c lost");
-      Serial.print("EVENT=FACES_ENCODER_LOST FAIL_COUNT=");
-      Serial.println(facesEncoderFailCount);
-      drawEncoderArea();
-      drawLastEventArea();
-    }
-    return;
-  }
-
-  if (!facesEncoderReady) {
-    facesEncoderReady = true;
-    setLastEvent("i2c ready");
-    Serial.print("EVENT=FACES_ENCODER_READY ADDR=0x");
-    Serial.println(activeEncoderI2CAddr, HEX);
-    drawEncoderArea();
-    drawLastEventArea();
-  }
-
-  facesEncoderButton = buttonState;
-  lastFacesEncoderRawIncrement = rawIncrement;
-
-  const int32_t delta = decodeFacesEncoderDelta(rawIncrement);
-  if (delta == 0) {
-    return;
-  }
-
-  const unsigned long now = millis();
-  if (now - lastEncoderColorStep < ENCODER_COLOR_STEP_INTERVAL_MS) {
-    Serial.print("EVENT=FACES_ENCODER_ROTATE_IGNORED RAW=");
-    Serial.print(rawIncrement);
-    Serial.print(" DELTA=");
-    Serial.print(delta);
-    Serial.print(" REASON=THROTTLE_MS_");
-    Serial.println(ENCODER_COLOR_STEP_INTERVAL_MS);
-    return;
-  }
-  lastEncoderColorStep = now;
-
-  Serial.print("EVENT=FACES_ENCODER_ROTATE RAW=");
-  Serial.print(rawIncrement);
-  Serial.print(" DELTA=");
-  Serial.print(delta);
-  Serial.print(" COLOR_STEP=1");
-  Serial.print(" KEY=");
-  Serial.println(buttonState);
-
-  sendEncoderColorStep(delta > 0 ? 1 : -1, "I2C");
-}
-
-void nextColor() {
-  buttonEventCount++;
-  setLastEvent("B next");
-  setColor((colorIndex + 1) % COLOR_COUNT);
-  sendEspNowControl("BUTTON_PRESS", "B", "NEXT", 0);
-  Serial.print("EVENT=BUTTON_PRESS BUTTON=B ACTION=NEXT COLOR=");
-  Serial.println(COLOR_NAMES[colorIndex]);
-}
-
-void previousColor() {
-  buttonEventCount++;
-  setLastEvent("A previous");
-  setColor((colorIndex + COLOR_COUNT - 1) % COLOR_COUNT);
-  sendEspNowControl("BUTTON_PRESS", "A", "PREVIOUS", 0);
-  Serial.print("EVENT=BUTTON_PRESS BUTTON=A ACTION=PREVIOUS COLOR=");
-  Serial.println(COLOR_NAMES[colorIndex]);
-}
-
-void offColor() {
-  buttonEventCount++;
-  setLastEvent("C off");
-  setColor(COLOR_COUNT - 1);
-  sendEspNowControl("BUTTON_PRESS", "C", "OFF", 0);
-  Serial.println("EVENT=BUTTON_PRESS BUTTON=C ACTION=OFF COLOR=off");
-}
-
-void flashUploadMarker() {
-  const CRGB bootColors[] = {
-    CRGB::Red,
-    CRGB::Green,
-    CRGB::Blue,
-    CRGB::White,
-  };
-
-  for (uint8_t i = 0; i < sizeof(bootColors) / sizeof(bootColors[0]); i++) {
-    leds[0] = bootColors[i];
-    FastLED.show();
-    delay(250);
-  }
+void printStatus() {
+  const uint32_t now = millis();
+  Serial.print("EVENT=M5_STATUS SERIAL_FRAMES=");
+  Serial.print(serialFrameCount);
+  Serial.print(" SERIAL_ERRORS=");
+  Serial.print(serialErrorCount);
+  Serial.print(" ESPNOW_TX=");
+  Serial.print(espNowSendCount);
+  Serial.print(" ESPNOW_FAIL=");
+  Serial.print(espNowSendFailCount);
+  Serial.print(" CMD_RX=");
+  Serial.print(controlRxCount);
+  Serial.print(" CMD_TX=");
+  Serial.print(controlSendCount);
+  Serial.print(" CMD_FAIL=");
+  Serial.print(controlSendFailCount);
+  Serial.print(" MIC_STATUS=");
+  Serial.print(haveMicStatus ? "YES" : "NO");
+  Serial.print(" SERIAL_AGE_MS=");
+  Serial.print(haveEeg ? now - lastSerialFrameMs : 0);
+  Serial.print(" MIC_AGE_MS=");
+  Serial.print(haveMicStatus ? now - lastMicStatusMs : 0);
+  Serial.print(" EEG_SEQ=");
+  Serial.print(haveEeg ? latestEegPacket.seq : 0);
+  Serial.print(" POOR_SIGNAL=");
+  Serial.print(haveEeg ? latestEegPacket.poorSignal : 255);
+  Serial.print(" ATTENTION=");
+  Serial.print(haveEeg ? latestEegPacket.attention : 0);
+  Serial.print(" MEDITATION=");
+  Serial.print(haveEeg ? latestEegPacket.meditation : 0);
+  Serial.print(" MIC_RX=");
+  Serial.print(latestMicStatus.rxCount);
+  Serial.print(" MIC_DROP=");
+  Serial.print(latestMicStatus.dropCount);
+  Serial.print(" MIC_TIMEOUT=");
+  Serial.print(latestMicStatus.timeoutCount);
+  Serial.print(" MIC_LIGHT_MODE=");
+  Serial.print(latestMicStatus.lightMode);
+  Serial.print(" MIC_LIGHT_LEVEL=");
+  Serial.print(latestMicStatus.lightLevel);
+  Serial.print(" MIC_STEPPER=");
+  Serial.print(latestMicStatus.stepperState);
+  Serial.print(" MIC_RELAY=");
+  Serial.print(latestMicStatus.relayState);
+  Serial.print(" MIC_SAFETY=");
+  Serial.print(latestMicStatus.safetyState);
+  Serial.print(" MIC_CONTROL_RX=");
+  Serial.print(latestMicStatus.controlRxCount);
+  Serial.print(" MIC_LAST_ACTION=");
+  Serial.print(latestMicStatus.lastControlAction);
+  Serial.print(" MIC_MANUAL_LIGHT=");
+  Serial.print(latestMicStatus.manualLightEnabled);
+  Serial.print(" MIC_RELAY_ENABLED=");
+  Serial.print(latestMicStatus.relayOutputEnabled);
+  Serial.print(" MIC_STEPPER_ENABLED=");
+  Serial.print(latestMicStatus.stepperOutputEnabled);
+  Serial.print(" MIC_SYSTEM_ENABLED=");
+  Serial.println(latestMicStatus.systemEnabled);
 }
 
 void setup() {
   M5.begin();
   M5.Power.begin();
-  Serial.begin(115200);
-  thinkGear.poorSignal = 255;
+  Serial.begin(SERIAL_BAUD);
   delay(300);
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Wire.setClock(100000);
-  dacWrite(25, 0);
-
-  Serial.println();
-  Serial.print("Starting screen button RGB test for ");
-  Serial.println(BOARD_NAME);
-  Serial.println("RGB LED data pin: GPIO 4");
-  Serial.println("A=previous color, B=next color, C=off");
-  Serial.println("Faces Encoder: I2C address 0x5E, Mega328 module");
-  Serial.println("Fallback test address: 0x62");
-  Serial.println("I2C pins: SDA=GPIO21, SCL=GPIO22, speed=100kHz");
-  Serial.println("Rotate encoder = change color, ESP-NOW sends color to Microduino");
-  Serial.println("ThinkGear input: BLE scan diagnosis, no wire");
-
-  initThinkGearBluetooth();
-
-  scanI2CBus();
-  facesEncoderReady = chooseEncoderI2CAddress();
-  Serial.print("EVENT=FACES_ENCODER_BOOT_STATUS ACTIVE_ADDR=0x");
-  Serial.print(activeEncoderI2CAddr, HEX);
-  Serial.print(" STATUS=");
-  Serial.println(facesEncoderReady ? "OK" : "NOT_FOUND");
-
-  initEspNowSender();
-
-  FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUM_LEDS);
-  FastLED.setBrightness(50);
 
   M5.Lcd.setBrightness(160);
-  flashUploadMarker();
   drawStaticScreen();
-  setColor(colorIndex);
-  drawDynamicAreas();
+
+  Serial.println();
+  Serial.print("EVENT=DREAM_BOOT BOARD=");
+  Serial.print(BOARD_NAME);
+  Serial.print(" ROLE=");
+  Serial.println(DEVICE_ROLE);
+  Serial.println("EVENT=SERIAL_READY INPUT=EEG_CSV TARGET=M5STACK");
+
+  initEspNow();
+  drawDashboard();
 }
 
 void loop() {
   M5.update();
-  handleEncoder();
-  handleThinkGearBluetooth();
+  handleButtons();
+  handleSerialInput();
 
-  if (M5.BtnA.wasPressed()) {
-    previousColor();
+  const uint32_t now = millis();
+  if (now - lastDisplayRefreshMs >= DISPLAY_REFRESH_MS) {
+    lastDisplayRefreshMs = now;
+    drawDashboard();
   }
 
-  if (M5.BtnB.wasPressed()) {
-    nextColor();
-  }
-
-  if (M5.BtnC.wasPressed()) {
-    offColor();
-  }
-
-  if (M5.BtnA.wasReleased()) {
-    Serial.println("EVENT=BUTTON_RELEASE BUTTON=A");
-  }
-
-  if (M5.BtnB.wasReleased()) {
-    Serial.println("EVENT=BUTTON_RELEASE BUTTON=B");
-  }
-
-  if (M5.BtnC.wasReleased()) {
-    Serial.println("EVENT=BUTTON_RELEASE BUTTON=C");
-  }
-
-  if (millis() - lastButtonRefresh >= BUTTON_REFRESH_MS) {
-    lastButtonRefresh = millis();
-    drawButtonStatusArea();
-  }
-
-  if (millis() - lastEncoderStatusRefresh >= ENCODER_STATUS_REFRESH_MS) {
-    lastEncoderStatusRefresh = millis();
-    drawEncoderArea();
-  }
-
-  if (!facesEncoderReady && millis() - lastI2CScan >= I2C_SCAN_REFRESH_MS) {
-    lastI2CScan = millis();
-    scanI2CBus();
-    facesEncoderReady = chooseEncoderI2CAddress();
-    drawEncoderArea();
-  }
-
-  if (millis() - lastUptimeRefresh >= UPTIME_REFRESH_MS) {
-    lastUptimeRefresh = millis();
-    drawUptimeArea();
+  if (now - lastStatusPrintMs >= STATUS_PRINT_MS) {
+    lastStatusPrintMs = now;
+    printStatus();
   }
 }

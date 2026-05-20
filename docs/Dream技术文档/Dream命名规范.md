@@ -1,6 +1,6 @@
 # Dream 命名规范
 
-更新时间：2026-05-18  
+更新时间：2026-05-20  
 用途：统一 Dream 装置后续文档、代码、协议、变量、日志和文件命名。  
 适用范围：`docs/` 文档、`src/` 固件、`tools/` 电脑端脚本、USB 串口、ESP-NOW 协议、调试日志。
 
@@ -35,17 +35,23 @@
 
 ## 3. 文档文件命名
 
-文档文件放在 `docs/`，使用中文名，前缀统一为 `Dream`。
+文档文件放在 `docs/`，使用中文名，前缀统一为 `Dream`。使用说明统一放在 `docs/Dream使用说明/`；技术设计、通信方案和命名规范统一放在 `docs/Dream技术文档/`；仓库状态和需求原始文档保留在 `docs/` 根目录。
 
 当前文档命名：
 
 | 文件 | 用途 |
 | --- | --- |
 | `docs/Dream仓库状态说明.md` | 仓库当前状态、板卡、环境、已完成内容 |
-| `docs/Dream完整技术设计文档.md` | 整套装置技术设计总文档 |
-| `docs/Dream脑电无线转发Microduino技术方案.md` | 脑电到 Microduino 的通信专项方案 |
-| `docs/Dream命名规范.md` | 本命名规范 |
+| `docs/Dream技术文档/Dream完整技术设计文档.md` | 整套装置技术设计总文档 |
+| `docs/Dream技术文档/Dream脑电无线转发Microduino技术方案.md` | 脑电到 Microduino 的通信专项方案 |
+| `docs/Dream技术文档/Dream命名规范.md` | 本命名规范 |
 | `docs/Dream需求规划文档_V3.0.docx` | 需求规划原始文档 |
+| `docs/Dream使用说明/Dream使用说明总览.md` | 使用说明入口 |
+| `docs/Dream使用说明/Dream电脑端与前端使用说明.md` | 电脑端脚本和浏览器前端使用说明 |
+| `docs/Dream使用说明/Dream板卡固件烧录使用说明.md` | M5Stack 和 Microduino 固件烧录说明 |
+| `docs/Dream使用说明/Dream现场开机与关机流程.md` | 现场开机、测试、运行、关机流程 |
+| `docs/Dream使用说明/Dream故障排查手册.md` | 常见故障和排查步骤 |
+| `docs/Dream使用说明/Dream接口与指令协议说明.md` | EEG、CMD、ESP-NOW 和状态回传协议说明 |
 
 后续新增文档建议：
 
@@ -98,6 +104,24 @@
 | `tools/dream_eeg_log_replay.py` | 回放 EEG 日志 |
 | `tools/dream_serial_probe.py` | 检查脑电串口数据 |
 | `tools/dream_protocol_check.py` | 校验协议帧格式 |
+
+当前 `tools/dream_eeg_serial_bridge.py` 同时提供浏览器前端。前端状态字段使用 `lowerCamelCase`，并保留以下真实状态标记：
+
+| 字段 | 说明 |
+| --- | --- |
+| `eeg.seen` | 是否收到真实 EEG 包 |
+| `m5.seen` | 是否收到真实 M5Stack 状态 |
+| `mic.seen` | 当前是否有 Microduino 状态回传 |
+| `bridge.sourceOpen` | 脑电串口是否打开 |
+| `bridge.targetOpen` | M5Stack 串口是否打开 |
+
+前端按钮反馈统一使用：
+
+| 反馈文字 | 含义 |
+| --- | --- |
+| `发送中` | 请求已发给 Python 本地服务 |
+| `已发送` | 命令已进入 M5Stack 串口发送队列 |
+| `失败` | 命令没有进入发送队列 |
 
 ## 6. PlatformIO 环境命名
 
