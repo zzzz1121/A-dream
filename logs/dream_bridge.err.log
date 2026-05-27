@@ -1,0 +1,90 @@
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 63239)
+Traceback (most recent call last):
+  File "C:\Users\lenovo\.platformio\python3\Lib\socketserver.py", line 691, in process_request_thread
+    self.finish_request(request, client_address)
+  File "C:\Users\lenovo\.platformio\python3\Lib\socketserver.py", line 361, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "C:\Users\lenovo\.platformio\python3\Lib\socketserver.py", line 755, in __init__
+    self.handle()
+  File "C:\Users\lenovo\.platformio\python3\Lib\http\server.py", line 438, in handle
+    self.handle_one_request()
+  File "C:\Users\lenovo\.platformio\python3\Lib\http\server.py", line 404, in handle_one_request
+    self.raw_requestline = self.rfile.readline(65537)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\.platformio\python3\Lib\socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 57998)
+Traceback (most recent call last):
+  File "C:\Users\lenovo\.platformio\python3\Lib\socketserver.py", line 691, in process_request_thread
+    self.finish_request(request, client_address)
+  File "C:\Users\lenovo\.platformio\python3\Lib\socketserver.py", line 361, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "C:\Users\lenovo\.platformio\python3\Lib\socketserver.py", line 755, in __init__
+    self.handle()
+  File "C:\Users\lenovo\.platformio\python3\Lib\http\server.py", line 438, in handle
+    self.handle_one_request()
+  File "C:\Users\lenovo\.platformio\python3\Lib\http\server.py", line 404, in handle_one_request
+    self.raw_requestline = self.rfile.readline(65537)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\.platformio\python3\Lib\socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 57662)
+Traceback (most recent call last):
+  File "C:\Users\lenovo\.platformio\python3\Lib\socketserver.py", line 691, in process_request_thread
+    self.finish_request(request, client_address)
+  File "C:\Users\lenovo\.platformio\python3\Lib\socketserver.py", line 361, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "C:\Users\lenovo\.platformio\python3\Lib\socketserver.py", line 755, in __init__
+    self.handle()
+  File "C:\Users\lenovo\.platformio\python3\Lib\http\server.py", line 438, in handle
+    self.handle_one_request()
+  File "C:\Users\lenovo\.platformio\python3\Lib\http\server.py", line 404, in handle_one_request
+    self.raw_requestline = self.rfile.readline(65537)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\.platformio\python3\Lib\socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
+Exception in thread dream-serial:
+Traceback (most recent call last):
+  File "C:\Users\lenovo\.platformio\python3\Lib\threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "C:\Users\lenovo\.platformio\python3\Lib\threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "E:\vscode\dream\pio-test\tools\dream_eeg_serial_bridge.py", line 927, in run_serial_loop
+    self.drain_target_log(target)
+  File "E:\vscode\dream\pio-test\tools\dream_eeg_serial_bridge.py", line 975, in drain_target_log
+    while target.in_waiting:
+          ^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\.platformio\penv\Lib\site-packages\serial\serialwin32.py", line 259, in in_waiting
+    raise SerialException("ClearCommError failed ({!r})".format(ctypes.WinError()))
+serial.serialutil.SerialException: ClearCommError failed (PermissionError(13, '拒绝访问。', None, 5))
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 53055)
+Traceback (most recent call last):
+  File "C:\Users\lenovo\.platformio\python3\Lib\socketserver.py", line 691, in process_request_thread
+    self.finish_request(request, client_address)
+  File "C:\Users\lenovo\.platformio\python3\Lib\socketserver.py", line 361, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "C:\Users\lenovo\.platformio\python3\Lib\socketserver.py", line 755, in __init__
+    self.handle()
+  File "C:\Users\lenovo\.platformio\python3\Lib\http\server.py", line 438, in handle
+    self.handle_one_request()
+  File "C:\Users\lenovo\.platformio\python3\Lib\http\server.py", line 404, in handle_one_request
+    self.raw_requestline = self.rfile.readline(65537)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\.platformio\python3\Lib\socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。
+----------------------------------------
