@@ -416,7 +416,7 @@ M5Stack 屏幕建议 5-10 Hz 局部刷新。
 ### 7.1 硬件链路
 
 ```text
-Microduino GPIO26 TX
+Microduino GPIO27 TX
   -> MAX485 / RS485 模块 DI
   -> DMX+ / DMX-
   -> DMX 灯具 1
@@ -430,7 +430,7 @@ RO/RX 可以不接
 DE 和 RE 根据模块要求接到发送使能
 ```
 
-当前代码原型中 `DMX_TX_PIN = 26`。
+当前代码原型中 `DMX_TX_PIN = 27`。
 
 ### 7.2 DMX 地址规划
 
@@ -535,7 +535,7 @@ LIMIT_MIN_PIN
 LIMIT_MAX_PIN
 ```
 
-实际引脚需要结合 Microduino 可用 GPIO、DMX 占用 GPIO26、继电器占用情况统一规划。
+实际引脚需要结合 Microduino 可用 GPIO、DMX 占用 GPIO27、继电器占用情况统一规划。
 
 ### 8.3 控制原则
 

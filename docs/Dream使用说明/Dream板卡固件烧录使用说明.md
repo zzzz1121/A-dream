@@ -189,10 +189,10 @@ systemEnabled = false
 当前 DMX 使用：
 
 ```cpp
-#define DMX_TX_PIN 26
+#define DMX_TX_PIN 27
 ```
 
-之前步进测试中电机 2 的 `DIR` 使用 `GPIO26`，两者冲突。正式启用前必须改引脚。
+正式启用前必须再次核对 DMX、步进和继电器的引脚分配，避免多个输出复用同一个 GPIO。
 
 ## 9. 烧录后最小测试
 

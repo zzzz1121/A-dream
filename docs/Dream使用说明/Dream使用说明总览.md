@@ -35,6 +35,7 @@ Microduino Core ESP32
 | --- | --- |
 | [Dream电脑端与前端使用说明](Dream电脑端与前端使用说明.md) | 运行脑电桥接脚本、打开浏览器前端、发送控制指令 |
 | [Dream板卡固件烧录使用说明](Dream板卡固件烧录使用说明.md) | 编译、上传 M5Stack 和 Microduino 固件 |
+| [DreamM5Stack屏幕界面说明](DreamM5Stack屏幕界面说明.md) | 解释 M5Stack 屏幕字段、按键和现场读屏判断 |
 | [Dream现场开机与关机流程](Dream现场开机与关机流程.md) | 展览现场的开机、测试、运行、关机顺序 |
 | [Dream故障排查手册](Dream故障排查手册.md) | 串口、前端、ESP-NOW、灯光、继电器、电机常见问题 |
 | [Dream接口与指令协议说明](Dream接口与指令协议说明.md) | `EEG`、`CMD`、ESP-NOW 包和状态回传字段 |

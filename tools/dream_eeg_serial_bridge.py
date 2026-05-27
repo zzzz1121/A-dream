@@ -278,42 +278,67 @@ INDEX_HTML = r"""<!doctype html>
     }
     button {
       min-height: 42px;
-      border: 1px solid #caccc3;
+      border: 1px solid #d5d3ca;
       border-radius: 8px;
-      background: #f6f6f1;
+      background: #fbfaf6;
       color: var(--ink);
       font-size: 13px;
       font-weight: 720;
       cursor: pointer;
-      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+      box-shadow: 0 1px 0 rgba(35, 36, 32, 0.04);
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease, transform 80ms ease, opacity 120ms ease;
     }
     button:hover:not(:disabled) {
-      border-color: #aeb2a7;
-      background: #eeeeE7;
+      border-color: #aaa89e;
+      background: #f1f0ea;
+      box-shadow: 0 1px 2px rgba(35, 36, 32, 0.08);
     }
-    button.primary { color: #ffffff; background: var(--accent); border-color: var(--accent); }
-    button.good { color: #ffffff; background: var(--ok); border-color: var(--ok); }
-    button.danger { color: #ffffff; background: var(--bad); border-color: var(--bad); }
+    button:active:not(:disabled) {
+      transform: translateY(1px);
+      box-shadow: none;
+    }
+    button:focus-visible {
+      outline: 2px solid #b8aa94;
+      outline-offset: 2px;
+    }
+    button.primary {
+      color: #f8f7f1;
+      background: #343632;
+      border-color: #343632;
+    }
+    button.primary:hover:not(:disabled) {
+      background: #282a27;
+      border-color: #282a27;
+    }
+    button.good {
+      color: #245b3c;
+      background: #edf5ef;
+      border-color: #bfd8c8;
+    }
+    button.good:hover:not(:disabled) {
+      color: #1e4f34;
+      background: #e2eee6;
+      border-color: #9fc3ad;
+    }
+    button.danger {
+      color: #96352f;
+      background: #fbefed;
+      border-color: #e3beb8;
+    }
+    button.danger:hover:not(:disabled) {
+      color: #842c27;
+      background: #f5e4e1;
+      border-color: #d8a49d;
+    }
     button.is-pending {
-      color: var(--warn);
-      background: #fff4d8;
-      border-color: #ead39a;
-    }
-    button.is-success {
-      color: #ffffff;
-      background: var(--ok);
-      border-color: var(--ok);
-    }
-    button.is-error {
-      color: #ffffff;
-      background: var(--bad);
-      border-color: var(--bad);
+      opacity: 0.72;
     }
     button:disabled {
       cursor: not-allowed;
       color: #9b9d96;
       background: #eeeeea;
       border-color: #dedfd7;
+      box-shadow: none;
     }
     .control-block {
       display: grid;
@@ -527,6 +552,9 @@ INDEX_HTML = r"""<!doctype html>
     const buttonLabels = new WeakMap();
     let localNotice = "";
     let suppressLogRender = false;
+    let commandFeedbackUntil = 0;
+    let commandFeedbackTimer = 0;
+    let latestCommandReady = false;
     document.querySelectorAll("[id]").forEach((el) => ids[el.id] = el);
     document.querySelectorAll("button[data-action], #clearLog").forEach((button) => buttonLabels.set(button, button.textContent));
 
@@ -565,22 +593,20 @@ INDEX_HTML = r"""<!doctype html>
       }
       return [0, 0, 0, 0];
     };
-    const setButtonFeedback = (button, state, label) => {
-      const original = buttonLabels.get(button) || button.textContent;
-      button.classList.remove("is-pending", "is-success", "is-error");
-      if (state) {
-        button.classList.add(`is-${state}`);
-      }
-      button.textContent = label || original;
-      window.clearTimeout(button.feedbackTimer);
-      if (state && state !== "pending") {
-        button.feedbackTimer = window.setTimeout(() => {
-          button.classList.remove("is-pending", "is-success", "is-error");
-          button.textContent = original;
-        }, 1400);
-      }
+    const setCommandFeedback = (state, text, duration = 1600) => {
+      pill(ids.commandStatus, state, text);
+      commandFeedbackUntil = Date.now() + duration;
+      window.clearTimeout(commandFeedbackTimer);
+      commandFeedbackTimer = window.setTimeout(() => setCommandReady(latestCommandReady), duration);
+    };
+    const setButtonPending = (button, pending) => {
+      button.classList.toggle("is-pending", pending);
+      button.disabled = pending;
+      button.setAttribute("aria-busy", pending ? "true" : "false");
     };
     const setCommandReady = (enabled) => {
+      latestCommandReady = enabled;
+      if (Date.now() < commandFeedbackUntil) return;
       pill(ids.commandStatus, enabled ? "ok" : "warn", enabled ? "可发送" : "等待串口");
     };
     const renderLogs = (logs) => {
@@ -593,8 +619,10 @@ INDEX_HTML = r"""<!doctype html>
     };
     const sendCommand = async (button) => {
       const action = button.dataset.action;
-      setButtonFeedback(button, "pending", "发送中");
-      setNotice(`正在发送：${buttonLabels.get(button) || action}`);
+      const label = buttonLabels.get(button) || action;
+      setButtonPending(button, true);
+      setCommandFeedback("warn", "发送中", 30000);
+      setNotice(`正在发送：${label}`);
       try {
         const response = await fetch("/api/command", {
           method: "POST",
@@ -603,15 +631,17 @@ INDEX_HTML = r"""<!doctype html>
         });
         const payload = await response.json();
         if (!response.ok) {
-          setButtonFeedback(button, "error", "失败");
+          setCommandFeedback("bad", "失败");
           setNotice(`命令未发送：${payload.error || response.status}`);
           return;
         }
-        setButtonFeedback(button, "success", "已发送");
+        setCommandFeedback("ok", "已发送");
         setNotice(`命令已交给串口队列：${payload.command}`);
       } catch (error) {
-        setButtonFeedback(button, "error", "失败");
+        setCommandFeedback("bad", "失败");
         setNotice(`命令未发送：${error}`);
+      } finally {
+        setButtonPending(button, false);
       }
     };
     document.querySelectorAll("button[data-action]").forEach((button) => {
@@ -620,7 +650,7 @@ INDEX_HTML = r"""<!doctype html>
     ids.clearLog.addEventListener("click", () => {
       suppressLogRender = true;
       ids.log.textContent = "";
-      setButtonFeedback(ids.clearLog, "success", "已清空");
+      setCommandFeedback("ok", "已清空", 1200);
       setNotice("事件日志显示已清空。");
       setTimeout(() => suppressLogRender = false, 2500);
     });

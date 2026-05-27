@@ -10,7 +10,7 @@
 #define ESPNOW_CHANNEL 1
 #define SERIAL_BAUD 115200
 #define SERIAL_LINE_BUFFER_SIZE 192
-#define DISPLAY_REFRESH_MS 200
+#define DISPLAY_REFRESH_MS 1000
 #define STATUS_PRINT_MS 1000
 #define SERIAL_TIMEOUT_MS 3000
 #define MIC_STATUS_TIMEOUT_MS 3000
@@ -651,89 +651,104 @@ void drawStaticScreen() {
   M5.Lcd.print("Dream M5 Gateway");
 }
 
-void drawDashboard() {
+template <typename Canvas>
+void drawDashboardContent(Canvas &canvas, int16_t yShift) {
   const uint32_t now = millis();
   const uint32_t serialAgeMs = haveEeg ? now - lastSerialFrameMs : 0xFFFFFFFFUL;
   const uint32_t micAgeMs = haveMicStatus ? now - lastMicStatusMs : 0xFFFFFFFFUL;
+  const uint8_t displayedPoorSignal = haveEeg ? latestEegPacket.poorSignal : 255;
   const uint32_t alphaPower = latestEegPacket.eegPower[2] + latestEegPacket.eegPower[3];
   const uint32_t betaPower = latestEegPacket.eegPower[4] + latestEegPacket.eegPower[5];
   const uint32_t gammaPower = latestEegPacket.eegPower[6] + latestEegPacket.eegPower[7];
 
-  M5.Lcd.fillRect(0, 30, 320, 210, 0x0000);
-  M5.Lcd.setTextSize(1);
+  canvas.setTextSize(1);
 
-  M5.Lcd.setTextColor(ageColor(serialAgeMs, 500, SERIAL_TIMEOUT_MS), 0x0000);
-  M5.Lcd.setCursor(8, 36);
-  M5.Lcd.printf("USB:%s age:%lums frames:%lu err:%lu",
+  canvas.fillRect(0, 34 + yShift, 320, 14, 0x0000);
+  canvas.setTextColor(ageColor(serialAgeMs, 500, SERIAL_TIMEOUT_MS), 0x0000);
+  canvas.setCursor(8, 36 + yShift);
+  canvas.printf("USB:%s age:%lums frames:%lu err:%lu",
                 haveEeg && serialAgeMs < SERIAL_TIMEOUT_MS ? "OK" : "WAIT",
                 haveEeg ? static_cast<unsigned long>(serialAgeMs) : 0,
                 static_cast<unsigned long>(serialFrameCount),
                 static_cast<unsigned long>(serialErrorCount));
 
-  M5.Lcd.setTextColor(lastSendStatus == ESP_NOW_SEND_SUCCESS ? 0x07E0 : 0xFFE0, 0x0000);
-  M5.Lcd.setCursor(8, 52);
-  M5.Lcd.printf("ESP:%s tx:%lu fail:%lu ch:%u",
+  canvas.fillRect(0, 50 + yShift, 320, 14, 0x0000);
+  canvas.setTextColor(lastSendStatus == ESP_NOW_SEND_SUCCESS ? 0x07E0 : 0xFFE0, 0x0000);
+  canvas.setCursor(8, 52 + yShift);
+  canvas.printf("ESP:%s tx:%lu fail:%lu ch:%u",
                 espNowReady ? (lastSendStatus == ESP_NOW_SEND_SUCCESS ? "OK" : "SEND") : "OFF",
                 static_cast<unsigned long>(espNowSendCount),
                 static_cast<unsigned long>(espNowSendFailCount),
                 ESPNOW_CHANNEL);
 
-  M5.Lcd.setTextColor(signalColor(latestEegPacket.poorSignal), 0x0000);
-  M5.Lcd.setTextSize(2);
-  M5.Lcd.setCursor(8, 76);
-  M5.Lcd.printf("Signal:%3u", haveEeg ? latestEegPacket.poorSignal : 255);
+  canvas.fillRect(0, 72 + yShift, 320, 24, 0x0000);
+  canvas.setTextColor(signalColor(displayedPoorSignal), 0x0000);
+  canvas.setTextSize(2);
+  canvas.setCursor(8, 76 + yShift);
+  canvas.printf("Signal:%3u", displayedPoorSignal);
 
-  M5.Lcd.setTextColor(0xFFFF, 0x0000);
-  M5.Lcd.setCursor(8, 104);
-  M5.Lcd.printf("Att:%3u  Med:%3u",
+  canvas.fillRect(0, 100 + yShift, 320, 24, 0x0000);
+  canvas.setTextColor(0xFFFF, 0x0000);
+  canvas.setCursor(8, 104 + yShift);
+  canvas.printf("Att:%3u  Med:%3u",
                 haveEeg ? latestEegPacket.attention : 0,
                 haveEeg ? latestEegPacket.meditation : 0);
 
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.setCursor(8, 136);
-  M5.Lcd.printf("seq:%lu pc:%lums",
+  canvas.setTextSize(1);
+  canvas.fillRect(0, 134 + yShift, 320, 14, 0x0000);
+  canvas.setCursor(8, 136 + yShift);
+  canvas.printf("seq:%lu pc:%lums",
                 static_cast<unsigned long>(latestEegPacket.seq),
                 static_cast<unsigned long>(latestEegPacket.pcTimeMs));
-  M5.Lcd.setCursor(8, 152);
-  M5.Lcd.printf("delta:%lu theta:%lu alpha:%lu",
+  canvas.fillRect(0, 150 + yShift, 320, 14, 0x0000);
+  canvas.setCursor(8, 152 + yShift);
+  canvas.printf("delta:%lu theta:%lu alpha:%lu",
                 static_cast<unsigned long>(latestEegPacket.eegPower[0]),
                 static_cast<unsigned long>(latestEegPacket.eegPower[1]),
                 static_cast<unsigned long>(alphaPower));
-  M5.Lcd.setCursor(8, 168);
-  M5.Lcd.printf("beta:%lu gamma:%lu",
+  canvas.fillRect(0, 166 + yShift, 320, 14, 0x0000);
+  canvas.setCursor(8, 168 + yShift);
+  canvas.printf("beta:%lu gamma:%lu",
                 static_cast<unsigned long>(betaPower),
                 static_cast<unsigned long>(gammaPower));
 
-  M5.Lcd.setTextColor(ageColor(micAgeMs, 1000, MIC_STATUS_TIMEOUT_MS), 0x0000);
-  M5.Lcd.setCursor(8, 190);
-  M5.Lcd.printf("MIC:%s age:%lums rx:%lu drop:%lu",
+  canvas.fillRect(0, 188 + yShift, 320, 14, 0x0000);
+  canvas.setTextColor(ageColor(micAgeMs, 1000, MIC_STATUS_TIMEOUT_MS), 0x0000);
+  canvas.setCursor(8, 190 + yShift);
+  canvas.printf("MIC:%s age:%lums rx:%lu drop:%lu",
                 haveMicStatus && micAgeMs < MIC_STATUS_TIMEOUT_MS ? "OK" : "WAIT",
                 haveMicStatus ? static_cast<unsigned long>(micAgeMs) : 0,
                 static_cast<unsigned long>(latestMicStatus.rxCount),
                 static_cast<unsigned long>(latestMicStatus.dropCount));
 
-  M5.Lcd.setTextColor(0xFFFF, 0x0000);
-  M5.Lcd.setCursor(8, 206);
+  canvas.fillRect(0, 204 + yShift, 320, 14, 0x0000);
+  canvas.setTextColor(0xFFFF, 0x0000);
+  canvas.setCursor(8, 206 + yShift);
   if (haveMicStatus && micAgeMs < MIC_STATUS_TIMEOUT_MS) {
-    M5.Lcd.printf("Light:%s %u  Step:%s",
+    canvas.printf("Light:%s %u  Step:%s",
                   lightModeName(latestMicStatus.lightMode),
                   latestMicStatus.lightLevel,
                   stepperStateName(latestMicStatus.stepperState));
   } else {
-    M5.Lcd.print("Light:WAIT 0  Step:WAIT");
+    canvas.print("Light:WAIT 0  Step:WAIT");
   }
-  M5.Lcd.setCursor(8, 222);
+  canvas.fillRect(0, 220 + yShift, 320, 14, 0x0000);
+  canvas.setCursor(8, 222 + yShift);
   if (haveMicStatus && micAgeMs < MIC_STATUS_TIMEOUT_MS) {
-    M5.Lcd.printf("Relay:%s  Safety:%s",
+    canvas.printf("Relay:%s  Safety:%s",
                   relayStateName(latestMicStatus.relayState),
                   safetyStateName(latestMicStatus.safetyState));
   } else {
-    M5.Lcd.print("Relay:WAIT  Safety:WAIT");
+    canvas.print("Relay:WAIT  Safety:WAIT");
   }
 
-  M5.Lcd.setCursor(212, 222);
-  M5.Lcd.setTextColor(haveMicStatus && latestMicStatus.systemEnabled ? 0x07E0 : 0xF800, 0x0000);
-  M5.Lcd.printf("SYS:%s", haveMicStatus && latestMicStatus.systemEnabled ? "ON" : "OFF");
+  canvas.setCursor(212, 222 + yShift);
+  canvas.setTextColor(haveMicStatus && latestMicStatus.systemEnabled ? 0x07E0 : 0xF800, 0x0000);
+  canvas.printf("SYS:%s", haveMicStatus && latestMicStatus.systemEnabled ? "ON" : "OFF");
+}
+
+void drawDashboard() {
+  drawDashboardContent(M5.Lcd, 0);
 }
 
 void printStatus() {

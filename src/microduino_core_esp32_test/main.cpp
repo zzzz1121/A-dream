@@ -21,7 +21,7 @@
 #define STATUS_PRINT_MS 1000
 
 #define DMX_PORT DMX_NUM_1
-#define DMX_TX_PIN 26
+#define DMX_TX_PIN 27
 #define DMX_RX_PIN -1
 #define DMX_EN_PIN -1
 #define DMX_LIGHT_1_ADDRESS 1

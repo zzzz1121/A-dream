@@ -6,8 +6,8 @@
 
 #define DMX_PORT DMX_NUM_1
 
-// 你现在接的是 ESP32 的 IO26
-const int DMX_TX_PIN = 26;
+// 你现在接的是 ESP32 的 IO27
+const int DMX_TX_PIN = 27;
 
 // RX 和 EN 暂时不用
 const int DMX_RX_PIN = -1;

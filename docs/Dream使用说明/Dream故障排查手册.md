@@ -168,7 +168,7 @@ MIC:WAIT
 - Microduino 是否在线。
 - DMX 灯地址是否为 001 和 005。
 - 灯具是否处于 RGBW 4 通道模式。
-- MAX485 DI 是否接到 `GPIO26`。
+- MAX485 DI 是否接到 `GPIO27`。
 - DMX+ / DMX- 是否接反。
 - 灯具电源是否正常。
 
@@ -221,7 +221,7 @@ src/microduino_core_esp32_dmx_spotlight_test/main.cpp
 
 注意：
 
-当前 DMX 使用 `GPIO26`，之前步进测试中电机 2 的 `DIR` 也用 `GPIO26`。必须重新规划引脚后再启用。
+当前 DMX 使用 `GPIO27`，正式启用步进电机前仍需要统一规划 DMX、步进和继电器引脚。
 
 ## 13. 系统运行一段时间后自动关闭
 
