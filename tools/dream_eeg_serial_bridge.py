@@ -28,6 +28,9 @@ PC_BRIDGE_VERSION = "0.2.0"
 THINKGEAR_MAX_PAYLOAD = 169
 DEFAULT_POOR_SIGNAL = 200
 STATE_PUSH_INTERVAL = 0.2
+MIC_STATUS_STALE_MS = 3000
+EEG_SEND_STALE_MS = 1500
+SERIAL_RECONNECT_INTERVAL_S = 2.0
 CONTROL_ACTIONS = {
     "system_enable": "SYSTEM_ENABLE",
     "system_disable": "SYSTEM_DISABLE",
@@ -273,6 +276,7 @@ INDEX_HTML = r"""<!doctype html>
       gap: 8px;
     }
     .button-row.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .button-row.single { grid-template-columns: minmax(0, 1fr); }
     button, input[type="color"], input[type="range"], input[type="number"] {
       font: inherit;
     }
@@ -352,25 +356,76 @@ INDEX_HTML = r"""<!doctype html>
       justify-content: space-between;
       gap: 10px;
     }
-    .input-row {
-      display: grid;
-      grid-template-columns: 56px minmax(0, 1fr) 74px;
-      gap: 10px;
-      align-items: center;
-    }
     .step-row {
       display: grid;
       grid-template-columns: 44px minmax(0, 1fr) 82px;
       gap: 10px;
       align-items: center;
     }
-    input[type="color"] {
-      width: 56px;
-      height: 40px;
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      padding: 4px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: var(--surface);
-      padding: 4px;
+      background: var(--surface-soft);
+    }
+    .segmented button {
+      min-height: 34px;
+      border-color: transparent;
+      background: transparent;
+      box-shadow: none;
+    }
+    .segmented button.is-selected {
+      color: #f8f7f1;
+      background: #343632;
+      border-color: #343632;
+    }
+    .mood-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .mood-button {
+      --mood: linear-gradient(135deg, #5f7fcd, #7bd9c8);
+      position: relative;
+      min-height: 56px;
+      padding: 8px 10px 8px 52px;
+      display: grid;
+      align-content: center;
+      gap: 3px;
+      overflow: hidden;
+      text-align: left;
+    }
+    .mood-button::before {
+      content: "";
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      width: 28px;
+      height: 28px;
+      transform: translateY(-50%);
+      border: 1px solid rgba(32, 33, 31, 0.16);
+      border-radius: 8px;
+      background: var(--mood);
+    }
+    .mood-button span {
+      position: relative;
+      font-size: 13px;
+      font-weight: 760;
+      line-height: 1.1;
+    }
+    .mood-button small {
+      position: relative;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+      line-height: 1.1;
+    }
+    .mood-button.is-selected {
+      border-color: #343632;
+      box-shadow: 0 0 0 2px rgba(52, 54, 50, 0.08);
     }
     input[type="range"] { width: 100%; accent-color: var(--accent); }
     input[type="number"] {
@@ -410,8 +465,9 @@ INDEX_HTML = r"""<!doctype html>
     @media (max-width: 680px) {
       main, aside { padding: 14px; }
       .hero, .section-head, .control-title { align-items: flex-start; flex-direction: column; }
-      .button-row, .button-row.two, .metric-grid.three, .metric-grid.four, .freq-grid { grid-template-columns: 1fr; }
-      .input-row, .step-row { grid-template-columns: 1fr; }
+      .button-row, .button-row.two, .button-row.single, .mood-grid, .metric-grid.three, .metric-grid.four, .freq-grid { grid-template-columns: 1fr; }
+      .segmented { grid-template-columns: 1fr; }
+      .step-row { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -500,14 +556,16 @@ INDEX_HTML = r"""<!doctype html>
               <button class="danger" data-action="all_stop">全部停止</button>
             </div>
             <div class="control-block">
-              <div class="control-title"><h2>灯光</h2><button data-action="light_auto">自动脑电</button></div>
-              <div class="input-row">
-                <input id="lightColor" type="color" value="#5f7fcd" aria-label="灯光颜色">
-                <input id="whiteLevel" type="range" min="0" max="255" value="0" aria-label="白光亮度">
-                <input id="whiteNumber" type="number" min="0" max="255" value="0" aria-label="白光数值">
+              <div class="control-title"><h2>灯光状态</h2><span id="lightMood" class="pill neutral">手动</span></div>
+              <div class="mood-grid">
+                <button class="mood-button" data-action="light_auto" style="--mood: linear-gradient(135deg, #d8dde6, #78c6b8);"><span>自动</span><small>脑电</small></button>
+                <button class="mood-button" data-action="light_color" data-color="#ff5cc8" data-white="18" style="--mood: linear-gradient(135deg, #ff5cc8, #8d5cff);"><span>粉紫</span><small>冥想</small></button>
+                <button class="mood-button" data-action="light_color" data-color="#20c7bd" data-white="8" style="--mood: linear-gradient(135deg, #20c7bd, #2878ff);"><span>蓝绿</span><small>平静</small></button>
+                <button class="mood-button" data-action="light_color" data-color="#4b7dff" data-white="0" style="--mood: linear-gradient(135deg, #4b7dff, #7b4dff);"><span>蓝紫</span><small>专注</small></button>
+                <button class="mood-button" data-action="light_color" data-color="#ff8a4c" data-white="12" style="--mood: linear-gradient(135deg, #ff8a4c, #ff5fb1);"><span>琥珀</span><small>唤醒</small></button>
+                <button class="mood-button" data-action="light_color" data-color="#294fcf" data-white="0" style="--mood: linear-gradient(135deg, #294fcf, #1dd6c9);"><span>深海</span><small>入梦</small></button>
               </div>
-              <div class="button-row two">
-                <button class="primary" data-action="light_color">发送颜色</button>
+              <div class="button-row single">
                 <button data-action="light_off">灯光关闭</button>
               </div>
             </div>
@@ -520,15 +578,24 @@ INDEX_HTML = r"""<!doctype html>
             </div>
             <div class="control-block">
               <div class="control-title"><h2>步进电机</h2><span id="stepperHint" class="pill neutral">--</span></div>
+              <div class="segmented" role="group" aria-label="步进电机目标">
+                <button type="button" class="is-selected" data-stepper-target="3">左右</button>
+                <button type="button" data-stepper-target="1">左</button>
+                <button type="button" data-stepper-target="2">右</button>
+              </div>
               <div class="step-row">
-                <span class="label">步数</span>
-                <input id="stepperSteps" type="range" min="20" max="800" value="200" aria-label="步进步数">
-                <input id="stepperNumber" type="number" min="20" max="800" value="200" aria-label="步进步数数值">
+                <span class="label">圈数</span>
+                <input id="stepperTurns" type="number" min="0.1" max="20" step="0.1" value="1" aria-label="步进电机圈数">
+                <span class="label" id="stepperStepsPreview">1600 步</span>
               </div>
               <div class="button-row">
-                <button class="primary" data-action="stepper_forward">正向触发</button>
-                <button class="primary" data-action="stepper_backward">反向触发</button>
+                <button class="primary" data-action="stepper_forward" data-turns="1">正转一圈</button>
+                <button class="primary" data-action="stepper_backward" data-turns="1">反转一圈</button>
                 <button data-action="stepper_stop">停止电机</button>
+              </div>
+              <div class="button-row two">
+                <button class="primary" data-action="stepper_forward">正转指定圈数</button>
+                <button class="primary" data-action="stepper_backward">反转指定圈数</button>
               </div>
             </div>
             <div id="notice" class="notice">等待真实串口连接。</div>
@@ -548,6 +615,7 @@ INDEX_HTML = r"""<!doctype html>
     const safetyStates = ["NORMAL", "SIGNAL", "TIMEOUT", "ESTOP", "FAULT"];
     const controlActions = ["NONE", "SYSTEM_ENABLE", "SYSTEM_DISABLE", "LIGHT_AUTO", "LIGHT_COLOR", "LIGHT_OFF", "RELAY_ON", "RELAY_OFF", "STEPPER_FORWARD", "STEPPER_BACKWARD", "STEPPER_STOP", "ALL_STOP"];
     const EEG_POWER_FIELDS = ["delta", "theta", "lowAlpha", "highAlpha", "lowBeta", "highBeta", "lowGamma", "midGamma"];
+    const STEPPER_STEPS_PER_REV = 1600;
     const ids = {};
     const buttonLabels = new WeakMap();
     let localNotice = "";
@@ -555,13 +623,28 @@ INDEX_HTML = r"""<!doctype html>
     let commandFeedbackUntil = 0;
     let commandFeedbackTimer = 0;
     let latestCommandReady = false;
+    let latestOutputReady = false;
+    let selectedStepperTarget = 3;
+    const outputActions = new Set([
+      "light_auto",
+      "light_color",
+      "light_off",
+      "relay_on",
+      "relay_off",
+      "stepper_forward",
+      "stepper_backward",
+      "stepper_stop"
+    ]);
     document.querySelectorAll("[id]").forEach((el) => ids[el.id] = el);
     document.querySelectorAll("button[data-action], #clearLog").forEach((button) => buttonLabels.set(button, button.textContent));
+    const lightPresetButtons = Array.from(document.querySelectorAll(".mood-button"));
+    const stepperTargetButtons = Array.from(document.querySelectorAll("[data-stepper-target]"));
 
     const setText = (id, value) => { ids[id].textContent = value ?? "--"; };
     const realText = (seen, value, suffix = "") => seen && value !== undefined && value !== null ? `${value}${suffix}` : "--";
     const modeText = (seen, values, index) => seen ? (values[index] ?? `UNKNOWN ${index}`) : "--";
     const actionText = (seen, index) => seen ? `action ${controlActions[index] ?? `UNKNOWN ${index}`}` : "action --";
+    const rgbwText = (values) => Array.isArray(values) ? values.join("/") : "--/--/--/--";
     const setBar = (id, seen, value, max = 100, invert = false) => {
       if (!seen) {
         ids[id].style.width = "0%";
@@ -578,18 +661,42 @@ INDEX_HTML = r"""<!doctype html>
       localNotice = text;
       ids.notice.textContent = text;
     };
-    const commandArgs = (action) => {
+    const normalizeHex = (value) => value && value.startsWith("#") ? value : `#${value || "000000"}`;
+    const selectLightPreset = (button) => {
+      lightPresetButtons.forEach((item) => item.classList.toggle("is-selected", item === button));
+      if (button) {
+        setText("lightMood", button.querySelector("span")?.textContent || "手动");
+      } else {
+        setText("lightMood", "手动");
+      }
+    };
+    const selectStepperTarget = (button) => {
+      selectedStepperTarget = Math.max(1, Math.min(3, Number(button?.dataset.stepperTarget || 3)));
+      stepperTargetButtons.forEach((item) => item.classList.toggle("is-selected", item === button));
+    };
+    const stepperTurns = (trigger) => {
+      const raw = Number(trigger?.dataset.turns || ids.stepperTurns.value || 1);
+      return Math.max(0.1, Math.min(20, Number.isFinite(raw) ? raw : 1));
+    };
+    const stepperSteps = (trigger) => Math.max(1, Math.min(65535, Math.round(stepperTurns(trigger) * STEPPER_STEPS_PER_REV)));
+    const updateStepperPreview = () => {
+      setText("stepperStepsPreview", `${stepperSteps(null)} 步`);
+    };
+    const commandArgs = (action, trigger) => {
       if (action === "light_color") {
-        const hex = ids.lightColor.value.slice(1);
+        const hex = normalizeHex(trigger?.dataset.color).slice(1);
         return [
           parseInt(hex.slice(0, 2), 16),
           parseInt(hex.slice(2, 4), 16),
           parseInt(hex.slice(4, 6), 16),
-          Number(ids.whiteNumber.value || 0)
+          Number(trigger?.dataset.white || 0)
         ];
       }
       if (action === "stepper_forward" || action === "stepper_backward") {
-        return [Number(ids.stepperNumber.value || 200), 0, 0, 0];
+        return [stepperSteps(trigger), selectedStepperTarget, 0, 0];
+      }
+      if (action === "stepper_stop") {
+        return [0, selectedStepperTarget, 0, 0];
       }
       return [0, 0, 0, 0];
     };
@@ -599,15 +706,30 @@ INDEX_HTML = r"""<!doctype html>
       window.clearTimeout(commandFeedbackTimer);
       commandFeedbackTimer = window.setTimeout(() => setCommandReady(latestCommandReady), duration);
     };
+    const canUseButton = (button) => {
+      const action = button.dataset.action || "";
+      return latestCommandReady && (!outputActions.has(action) || latestOutputReady);
+    };
     const setButtonPending = (button, pending) => {
       button.classList.toggle("is-pending", pending);
-      button.disabled = pending;
+      button.disabled = pending || !canUseButton(button);
       button.setAttribute("aria-busy", pending ? "true" : "false");
     };
     const setCommandReady = (enabled) => {
       latestCommandReady = enabled;
       if (Date.now() < commandFeedbackUntil) return;
       pill(ids.commandStatus, enabled ? "ok" : "warn", enabled ? "可发送" : "等待串口");
+    };
+    const setControlAvailability = (commandReady, outputReady) => {
+      latestOutputReady = outputReady;
+      document.querySelectorAll("button[data-action]").forEach((button) => {
+        const action = button.dataset.action || "";
+        const needsSystemOn = outputActions.has(action);
+        const pending = button.classList.contains("is-pending");
+        button.disabled = pending || !commandReady || (needsSystemOn && !outputReady);
+      });
+      stepperTargetButtons.forEach((button) => button.disabled = !outputReady);
+      ids.stepperTurns.disabled = !outputReady;
     };
     const renderLogs = (logs) => {
       if (suppressLogRender) return;
@@ -620,6 +742,13 @@ INDEX_HTML = r"""<!doctype html>
     const sendCommand = async (button) => {
       const action = button.dataset.action;
       const label = buttonLabels.get(button) || action;
+      if (action === "light_auto") {
+        selectLightPreset(button);
+      } else if (action === "light_color" && button.dataset.color) {
+        selectLightPreset(button);
+      } else if (action === "light_color" || action === "light_off") {
+        selectLightPreset(null);
+      }
       setButtonPending(button, true);
       setCommandFeedback("warn", "发送中", 30000);
       setNotice(`正在发送：${label}`);
@@ -627,7 +756,7 @@ INDEX_HTML = r"""<!doctype html>
         const response = await fetch("/api/command", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({action, args: commandArgs(action)})
+          body: JSON.stringify({action, args: commandArgs(action, button)})
         });
         const payload = await response.json();
         if (!response.ok) {
@@ -647,6 +776,9 @@ INDEX_HTML = r"""<!doctype html>
     document.querySelectorAll("button[data-action]").forEach((button) => {
       button.addEventListener("click", () => sendCommand(button));
     });
+    stepperTargetButtons.forEach((button) => {
+      button.addEventListener("click", () => selectStepperTarget(button));
+    });
     ids.clearLog.addEventListener("click", () => {
       suppressLogRender = true;
       ids.log.textContent = "";
@@ -654,17 +786,16 @@ INDEX_HTML = r"""<!doctype html>
       setNotice("事件日志显示已清空。");
       setTimeout(() => suppressLogRender = false, 2500);
     });
-    ids.whiteLevel.addEventListener("input", () => ids.whiteNumber.value = ids.whiteLevel.value);
-    ids.whiteNumber.addEventListener("input", () => ids.whiteLevel.value = ids.whiteNumber.value);
-    ids.stepperSteps.addEventListener("input", () => ids.stepperNumber.value = ids.stepperSteps.value);
-    ids.stepperNumber.addEventListener("input", () => ids.stepperSteps.value = ids.stepperNumber.value);
+    ids.stepperTurns.addEventListener("input", updateStepperPreview);
+    updateStepperPreview();
 
     const update = (state) => {
       const eegSeen = Boolean(state.eeg.seen);
       const m5Seen = Boolean(state.m5.seen);
-      const micSeen = Boolean(state.mic.seen && state.m5.micStatus === "YES");
+      const micSeen = Boolean(state.mic.seen && state.m5.micStatus === "YES" && state.m5.micAgeMs >= 0 && state.m5.micAgeMs < 3000);
       const serialReady = Boolean(state.bridge.sourceOpen && state.bridge.targetOpen);
       const commandReady = Boolean(state.bridge.targetOpen);
+      const outputReady = Boolean(commandReady && micSeen && state.mic.systemEnabled);
       pill(ids.webStatus, "ok", "已连接");
       pill(ids.sourceStatus, serialReady ? "ok" : "warn", serialReady ? "串口在线" : "等待串口");
       pill(ids.m5Status, m5Seen ? "ok" : "warn", m5Seen ? "在线" : "等待");
@@ -672,6 +803,7 @@ INDEX_HTML = r"""<!doctype html>
       pill(ids.eegStatus, eegSeen ? (state.eeg.ageMs < 1200 ? "ok" : "warn") : "warn", eegSeen ? "真实数据" : "等待脑电");
       pill(ids.systemEnabled, micSeen ? (state.mic.systemEnabled ? "ok" : "bad") : "neutral", micSeen ? (state.mic.systemEnabled ? "系统已开启" : "系统关闭") : "--");
       setCommandReady(commandReady);
+      setControlAvailability(commandReady, outputReady);
 
       setText("sourcePort", `${state.config.source}@${state.config.sourceBaud}`);
       setText("targetPort", `${state.config.target}@${state.config.targetBaud}`);
@@ -691,15 +823,15 @@ INDEX_HTML = r"""<!doctype html>
       setText("validPacketsPill", eegSeen ? `${state.stats.validPackets} 包` : "-- 包");
 
       setText("lightMode", modeText(micSeen, lightModes, state.mic.lightMode));
-      setText("lightLevel", micSeen ? `level ${state.mic.lightLevel}` : "level --");
+      setText("lightLevel", micSeen ? `level ${state.mic.lightLevel} L1 ${rgbwText(state.mic.light1Rgbw)} L2 ${rgbwText(state.mic.light2Rgbw)}` : "level --");
       setText("relayState", modeText(micSeen, relayStates, state.mic.relayState));
       setText("stepperState", modeText(micSeen, stepperStates, state.mic.stepperState));
       setText("safetyState", modeText(micSeen, safetyStates, state.mic.safetyState));
       setText("lastAction", actionText(micSeen, state.mic.lastControlAction));
       setText("relayEnabled", micSeen ? (state.mic.relayOutputEnabled ? "固件输出已启用" : "固件输出关闭") : "--");
       setText("stepperEnabled", micSeen ? (state.mic.stepperOutputEnabled ? "固件输出已启用" : "固件输出关闭") : "--");
-      pill(ids.relayHint, micSeen ? (state.mic.relayOutputEnabled ? "ok" : "warn") : "neutral", micSeen ? (state.mic.relayOutputEnabled ? "可输出" : "输出关闭") : "--");
-      pill(ids.stepperHint, micSeen ? (state.mic.stepperOutputEnabled ? "ok" : "warn") : "neutral", micSeen ? (state.mic.stepperOutputEnabled ? "可输出" : "输出关闭") : "--");
+      pill(ids.relayHint, micSeen ? (!state.mic.systemEnabled ? "neutral" : (state.mic.relayOutputEnabled ? "ok" : "warn")) : "neutral", micSeen ? (!state.mic.systemEnabled ? "需系统开启" : (state.mic.relayOutputEnabled ? "可输出" : "输出关闭")) : "--");
+      pill(ids.stepperHint, micSeen ? (!state.mic.systemEnabled ? "neutral" : (state.mic.stepperOutputEnabled ? "ok" : "warn")) : "neutral", micSeen ? (!state.mic.systemEnabled ? "需系统开启" : (state.mic.stepperOutputEnabled ? "可输出" : "输出关闭")) : "--");
 
       setText("sentFrames", realText(state.bridge.targetOpen, state.stats.sentFrames));
       setText("validPackets", realText(eegSeen, state.stats.validPackets));
@@ -709,7 +841,15 @@ INDEX_HTML = r"""<!doctype html>
       setText("micPackets", micSeen ? `rx ${state.mic.rxCount} / drop ${state.mic.dropCount}` : "--");
       setText("micControl", micSeen ? `control ${state.mic.controlRxCount}` : "control --");
       if (!localNotice) {
-        ids.notice.textContent = commandReady ? "控制指令会通过 M5Stack 串口转发。" : "等待 M5Stack 串口打开。";
+        if (!commandReady) {
+          ids.notice.textContent = "等待 M5Stack 串口打开。";
+        } else if (!micSeen) {
+          ids.notice.textContent = "等待 Microduino 状态；系统开启命令仍可发送。";
+        } else if (!state.mic.systemEnabled) {
+          ids.notice.textContent = "系统关闭：先点击系统开启，灯光、继电器和步进电机才会执行。";
+        } else {
+          ids.notice.textContent = "系统已开启：输出控制会通过 M5Stack 串口转发。";
+        }
       }
       renderLogs(state.bridge.logs);
     };
@@ -719,6 +859,7 @@ INDEX_HTML = r"""<!doctype html>
     events.onerror = () => {
       pill(ids.webStatus, "bad", "断开");
       setCommandReady(false);
+      setControlAvailability(false, false);
       setNotice("前端与本地服务断开。");
     };
   </script>
@@ -773,6 +914,8 @@ class MicStatus:
     timeout_count: int = 0
     light_mode: int = 0
     light_level: int = 0
+    light1_rgbw: list[int] = field(default_factory=lambda: [0, 0, 0, 0])
+    light2_rgbw: list[int] = field(default_factory=lambda: [0, 0, 0, 0])
     stepper_state: int = 0
     relay_state: int = 0
     safety_state: int = 2
@@ -891,22 +1034,64 @@ class DreamBridge:
         send_interval = 1.0 / self.args.send_rate
         next_send_time = time.monotonic() + send_interval
         next_print_time = time.monotonic() + self.args.print_rate
+        next_source_retry_time = 0.0
+        next_target_retry_time = 0.0
+        source: Optional[serial.Serial] = None
+        target: Optional[serial.Serial] = None
         self.open_log_writer()
         try:
-            with open_serial_port(self.args.source, self.args.source_baud) as source, open_serial_port(self.args.target, self.args.target_baud) as target:
-                with self.lock:
-                    self.runtime.source_open = True
-                    self.runtime.target_open = True
-                self.log(
-                    "EVENT=DREAM_BOOT ROLE=pcBridge "
-                    f"VERSION={PC_BRIDGE_VERSION} SOURCE={self.args.source}@{self.args.source_baud} "
-                    f"TARGET={self.args.target}@{self.args.target_baud} SEND_RATE={self.args.send_rate} "
-                    f"WEB=http://127.0.0.1:{self.args.web_port}/"
-                )
-                target.reset_input_buffer()
+            self.log(
+                "EVENT=DREAM_BOOT ROLE=pcBridge "
+                f"VERSION={PC_BRIDGE_VERSION} SOURCE={self.args.source}@{self.args.source_baud} "
+                f"TARGET={self.args.target}@{self.args.target_baud} SEND_RATE={self.args.send_rate} "
+                f"WEB=http://127.0.0.1:{self.args.web_port}/"
+            )
 
-                while not self.stop_event.is_set():
-                    raw = source.read(max(1, self.args.read_chunk))
+            while not self.stop_event.is_set():
+                now = time.monotonic()
+
+                if target is None and now >= next_target_retry_time:
+                    try:
+                        target = open_serial_port(self.args.target, self.args.target_baud)
+                        target.reset_input_buffer()
+                        with self.lock:
+                            self.runtime.target_open = True
+                            self.runtime.last_error = ""
+                        self.log(f"EVENT=TARGET_SERIAL_OPEN PORT={self.args.target} BAUD={self.args.target_baud}")
+                    except Exception as exc:
+                        next_target_retry_time = now + SERIAL_RECONNECT_INTERVAL_S
+                        with self.lock:
+                            self.runtime.target_open = False
+                            self.runtime.last_error = str(exc)
+                        self.log(f"EVENT=TARGET_SERIAL_OPEN_FAIL PORT={self.args.target} ERROR={exc}")
+
+                if self.args.source and source is None and now >= next_source_retry_time:
+                    try:
+                        source = open_serial_port(self.args.source, self.args.source_baud)
+                        with self.lock:
+                            self.runtime.source_open = True
+                            self.runtime.last_error = ""
+                        self.log(f"EVENT=SOURCE_SERIAL_OPEN PORT={self.args.source} BAUD={self.args.source_baud}")
+                    except Exception as exc:
+                        next_source_retry_time = now + SERIAL_RECONNECT_INTERVAL_S
+                        with self.lock:
+                            self.runtime.source_open = False
+                            self.runtime.last_error = str(exc)
+                        self.log(f"EVENT=SOURCE_SERIAL_OPEN_FAIL PORT={self.args.source} ERROR={exc}")
+
+                if source is not None:
+                    try:
+                        raw = source.read(max(1, self.args.read_chunk))
+                    except Exception as exc:
+                        self.log(f"EVENT=SOURCE_SERIAL_LOST PORT={self.args.source} ERROR={exc}")
+                        source.close()
+                        source = None
+                        next_source_retry_time = time.monotonic() + SERIAL_RECONNECT_INTERVAL_S
+                        with self.lock:
+                            self.runtime.source_open = False
+                            self.runtime.last_error = str(exc)
+                        raw = b""
+
                     if raw:
                         with self.lock:
                             self.stats.raw_bytes += len(raw)
@@ -914,23 +1099,53 @@ class DreamBridge:
                             with self.lock:
                                 self.parser.feed(value, self.eeg_frame, self.stats)
 
-                    now = time.monotonic()
-                    with self.lock:
-                        should_send = self.eeg_frame.seen and now >= next_send_time
-                    if should_send:
+                now = time.monotonic()
+                with self.lock:
+                    eeg_age_ms = int((now - self.eeg_frame.last_source_time) * 1000) if self.eeg_frame.seen else -1
+                    should_send = (
+                        target is not None
+                        and self.eeg_frame.seen
+                        and eeg_age_ms <= EEG_SEND_STALE_MS
+                        and now >= next_send_time
+                    )
+                if should_send:
+                    try:
                         self.send_eeg_frame(target, now)
-                        next_send_time += send_interval
-                        if now - next_send_time > send_interval:
-                            next_send_time = now + send_interval
+                    except Exception as exc:
+                        self.log(f"EVENT=TARGET_SERIAL_LOST PORT={self.args.target} ERROR={exc}")
+                        target.close()
+                        target = None
+                        next_target_retry_time = time.monotonic() + SERIAL_RECONNECT_INTERVAL_S
+                        with self.lock:
+                            self.runtime.target_open = False
+                            self.runtime.last_error = str(exc)
+                    next_send_time += send_interval
+                    if now - next_send_time > send_interval:
+                        next_send_time = now + send_interval
+                elif now >= next_send_time:
+                    next_send_time = now + send_interval
 
-                    self.send_pending_commands(target)
-                    self.drain_target_log(target)
+                if target is not None:
+                    try:
+                        self.send_pending_commands(target)
+                        self.drain_target_log(target)
+                    except Exception as exc:
+                        self.log(f"EVENT=TARGET_SERIAL_LOST PORT={self.args.target} ERROR={exc}")
+                        target.close()
+                        target = None
+                        next_target_retry_time = time.monotonic() + SERIAL_RECONNECT_INTERVAL_S
+                        with self.lock:
+                            self.runtime.target_open = False
+                            self.runtime.last_error = str(exc)
 
-                    if now >= next_print_time:
-                        self.print_status()
-                        next_print_time = now + self.args.print_rate
-                        if self.log_file is not None:
-                            self.log_file.flush()
+                now = time.monotonic()
+                if now >= next_print_time:
+                    self.print_status()
+                    next_print_time = now + self.args.print_rate
+                    if self.log_file is not None:
+                        self.log_file.flush()
+
+                time.sleep(0.005)
         except Exception as exc:
             with self.lock:
                 self.runtime.last_error = str(exc)
@@ -939,6 +1154,13 @@ class DreamBridge:
             self.log(f"EVENT=PC_BRIDGE_ERROR ERROR={exc}")
             raise
         finally:
+            if source is not None:
+                source.close()
+            if target is not None:
+                target.close()
+            with self.lock:
+                self.runtime.source_open = False
+                self.runtime.target_open = False
             self.close_log_writer()
 
     def send_eeg_frame(self, target: serial.Serial, now: float) -> None:
@@ -965,7 +1187,11 @@ class DreamBridge:
                 line = self.command_queue.get_nowait()
             except queue.Empty:
                 return
-            target.write(line.encode("ascii"))
+            try:
+                target.write(line.encode("ascii"))
+            except Exception:
+                self.command_queue.put(line)
+                raise
             with self.lock:
                 self.stats.command_frames += 1
                 self.runtime.last_command = line.strip()
@@ -997,7 +1223,8 @@ class DreamBridge:
                 self.m5_status.mic_status = pairs.get("MIC_STATUS", "NO")
                 self.m5_status.serial_age_ms = int_value(pairs, "SERIAL_AGE_MS")
                 self.m5_status.mic_age_ms = int_value(pairs, "MIC_AGE_MS")
-                if self.m5_status.mic_status == "YES":
+                mic_fresh = self.m5_status.mic_status == "YES" and self.m5_status.mic_age_ms < MIC_STATUS_STALE_MS
+                if mic_fresh:
                     self.mic_status.seen = True
                     self.mic_status.last_update_time = now
                     self.mic_status.rx_count = int_value(pairs, "MIC_RX")
@@ -1005,6 +1232,18 @@ class DreamBridge:
                     self.mic_status.timeout_count = int_value(pairs, "MIC_TIMEOUT")
                     self.mic_status.light_mode = int_value(pairs, "MIC_LIGHT_MODE")
                     self.mic_status.light_level = int_value(pairs, "MIC_LIGHT_LEVEL")
+                    self.mic_status.light1_rgbw = [
+                        int_value(pairs, "MIC_L1_R"),
+                        int_value(pairs, "MIC_L1_G"),
+                        int_value(pairs, "MIC_L1_B"),
+                        int_value(pairs, "MIC_L1_W"),
+                    ]
+                    self.mic_status.light2_rgbw = [
+                        int_value(pairs, "MIC_L2_R"),
+                        int_value(pairs, "MIC_L2_G"),
+                        int_value(pairs, "MIC_L2_B"),
+                        int_value(pairs, "MIC_L2_W"),
+                    ]
                     self.mic_status.stepper_state = int_value(pairs, "MIC_STEPPER")
                     self.mic_status.relay_state = int_value(pairs, "MIC_RELAY")
                     self.mic_status.safety_state = int_value(pairs, "MIC_SAFETY", 2)
@@ -1109,6 +1348,8 @@ class DreamBridge:
                     "timeoutCount": self.mic_status.timeout_count,
                     "lightMode": self.mic_status.light_mode,
                     "lightLevel": self.mic_status.light_level,
+                    "light1Rgbw": list(self.mic_status.light1_rgbw),
+                    "light2Rgbw": list(self.mic_status.light2_rgbw),
                     "stepperState": self.mic_status.stepper_state,
                     "relayState": self.mic_status.relay_state,
                     "safetyState": self.mic_status.safety_state,

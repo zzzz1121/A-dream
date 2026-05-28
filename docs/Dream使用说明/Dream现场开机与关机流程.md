@@ -1,6 +1,6 @@
 # Dream 现场开机与关机流程
 
-更新时间：2026-05-20
+更新时间：2026-05-28
 
 ## 1. 现场开机前检查
 
@@ -13,7 +13,7 @@
 - MAX485 / DMX 接线正确。
 - DMX 灯具地址为 001 和 005。
 - 继电器负载电源未直接暴露。
-- 步进电机机械结构无卡死。
+- 步进电机驱动器、电流、方向、限位和机械结构已确认无卡死。
 - 急停或断电方案可用。
 
 ### 1.2 电脑检查
@@ -46,8 +46,10 @@ pio device list
 运行脚本示例：
 
 ```powershell
-python tools\dream_eeg_serial_bridge.py --source COM3 --target COM6 --source-baud 57600 --target-baud 115200 --send-rate 20
+powershell -ExecutionPolicy Bypass -File .\tools\start_dream_frontend.ps1
 ```
+
+当前启动脚本默认使用脑电 `COM10@9600`、M5Stack `COM6@115200`。如果现场 COM 号变化，可给脚本传入 `-Source`、`-Target`、`-SourceBaud`、`-TargetBaud`。
 
 打开前端：
 
@@ -80,7 +82,7 @@ MIC:OK
 SYS:OFF
 ```
 
-如果 `SYS:OFF`，这是正常默认状态。点击 `系统开启` 后才允许机器动作。
+如果 `SYS:OFF`，这是正常默认状态。点击 `系统开启` 后才允许自动联动、手动灯光、继电器和步进电机动作；手动台架调试仍需按现场安全条件单独确认。
 
 ## 4. 展示运行步骤
 
@@ -90,8 +92,9 @@ SYS:OFF
 4. 前端点击 `系统开启`，或按 M5Stack A 键。
 5. 确认按钮反馈显示 `已发送`，再观察 Microduino 状态是否变化。
 6. 测试灯光是否响应。
-7. 确认雾机和电机输出是否符合当天硬件启用状态。
-8. 展示期间持续观察前端和 M5Stack。
+7. 测试步进电机时先选择 `左`、`右` 或 `左右`，确认方向和停止都正确。
+8. 确认雾机和电机输出是否符合当天硬件启用状态。
+9. 展示期间持续观察前端和 M5Stack。
 
 ## 5. 暂停和停止
 
@@ -133,7 +136,7 @@ SYS:OFF
 ```powershell
 python -m pip install pyserial
 pio device list
-python tools\dream_eeg_serial_bridge.py --source 脑电COM --target M5COM
+python tools\dream_eeg_serial_bridge.py --source 脑电COM --target M5COM --source-baud 脑电波特率
 ```
 
 ## 8. 现场老化测试建议

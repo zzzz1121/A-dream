@@ -1,6 +1,6 @@
 # Dream 接口与指令协议说明
 
-更新时间：2026-05-20
+更新时间：2026-05-28
 
 ## 1. 协议总览
 
@@ -73,25 +73,41 @@ CMD,seq,timeMs,action,arg1,arg2,arg3,arg4
 CMD,3,12800,SYSTEM_ENABLE,0,0,0,0
 CMD,4,13000,LIGHT_COLOR,255,80,120,0
 CMD,5,15000,RELAY_ON,0,0,0,0
-CMD,6,17000,STEPPER_FORWARD,200,0,0,0
-CMD,7,18000,ALL_STOP,0,0,0,0
+CMD,6,17000,STEPPER_FORWARD,1600,3,0,0
+CMD,7,17500,STEPPER_STOP,0,1,0,0
+CMD,8,18000,ALL_STOP,0,0,0,0
 ```
 
 支持的 `action`：
 
 | action | 说明 | 参数 |
 | --- | --- | --- |
-| `SYSTEM_ENABLE` | 系统开启，允许机器动作 | 无 |
+| `SYSTEM_ENABLE` | 系统开启，允许自动联动和继电器状态机动作 | 无 |
 | `SYSTEM_DISABLE` | 系统关闭，机器回到默认关闭 | 无 |
 | `LIGHT_AUTO` | 灯光回到脑电自动模式 | 无 |
 | `LIGHT_COLOR` | 手动设置灯光颜色 | `arg1=R`，`arg2=G`，`arg3=B`，`arg4=W` |
 | `LIGHT_OFF` | 手动关闭灯光 | 无 |
 | `RELAY_ON` | 请求继电器开启 | 无 |
 | `RELAY_OFF` | 请求继电器关闭 | 无 |
-| `STEPPER_FORWARD` | 请求电机正向移动 | `arg1=步数` |
-| `STEPPER_BACKWARD` | 请求电机反向移动 | `arg1=步数` |
-| `STEPPER_STOP` | 请求电机停止 | 无 |
+| `STEPPER_FORWARD` | 请求电机正向移动 | `arg1=步数`，`arg2=目标掩码` |
+| `STEPPER_BACKWARD` | 请求电机反向移动 | `arg1=步数`，`arg2=目标掩码` |
+| `STEPPER_STOP` | 请求电机停止 | `arg2=目标掩码` |
 | `ALL_STOP` | 全部停止，并关闭系统授权 | 无 |
+
+步进电机目标掩码：
+
+| `arg2` | 目标 |
+| ---: | --- |
+| `0` | 左右，兼容默认值 |
+| `1` | 左电机 |
+| `2` | 右电机 |
+| `3` | 左右电机 |
+
+步数规则：
+
+- `arg1=0` 时，Microduino 按一圈 `1600` 步处理。
+- 单次命令最大限制为 `64000` 步。
+- STEP 脉冲由 Microduino 本地状态机生成，前端不发送高频脉冲。
 
 ### 3.1 前端命令反馈
 
@@ -143,7 +159,7 @@ systemEnabled
 false
 ```
 
-只有收到 `SYSTEM_ENABLE` 后，才允许灯光、继电器和电机动作。
+自动 EEG 灯光、手动灯光、继电器和步进电机动作都需要收到 `SYSTEM_ENABLE` 后才允许。系统关闭时，输出类命令不会驱动物理输出；接入真实机械负载前必须先确认硬件安全。
 
 收到以下任一指令后，`systemEnabled` 会变为 `false`：
 
@@ -203,6 +219,8 @@ Microduino 会回传：
 | `meditation` | 最近放松度 |
 | `lightLevel` | 当前灯光亮度 |
 | `lightMode` | 当前灯光模式 |
+| `light1R / light1G / light1B / light1W` | 灯 1 当前 RGBW |
+| `light2R / light2G / light2B / light2W` | 灯 2 当前 RGBW |
 | `stepperState` | 当前电机状态 |
 | `relayState` | 当前继电器状态 |
 | `safetyState` | 当前安全状态 |
@@ -239,6 +257,8 @@ GET /api/state
 | `mic.ageMs` | 最近 Microduino 状态距现在的毫秒数，未收到时为 `-1` |
 | `bridge.sourceOpen` | 脑电蓝牙串口是否打开 |
 | `bridge.targetOpen` | M5Stack USB 串口是否打开 |
+| `mic.light1Rgbw` | 前端解析后的灯 1 RGBW 数组 |
+| `mic.light2Rgbw` | 前端解析后的灯 2 RGBW 数组 |
 
 前端渲染规则：
 

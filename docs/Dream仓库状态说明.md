@@ -1,17 +1,17 @@
 # Dream 仓库状态说明
 
-更新时间：2026-05-20
+更新时间：2026-05-28
 
 ## 当前定位
 
-`Dream` 是同名装置的 ESP32 固件、电脑端桥接程序、浏览器前端和技术文档仓库。当前阶段是可联调原型：脑电数据从电脑进入 M5Stack，再通过 ESP-NOW 转发给 Microduino，由 Microduino 负责灯光和机器安全状态。
+`Dream` 是同名装置的 ESP32 固件、电脑端桥接程序、浏览器前端和技术文档仓库。当前阶段是可联调原型：脑电数据从电脑进入 M5Stack，再通过 ESP-NOW 转发给 Microduino，由 Microduino 负责双 DMX 灯光、左右步进电机台架输出、继电器状态机和本地安全状态。
 
 项目需求基线为 `docs/Dream需求规划文档_V3.0.docx`。当前实现保留需求中的核心方向：
 
 - 脑电设备通过蓝牙把 ThinkGear 原始数据传到电脑。
 - 电脑解析脑电数据，并通过 USB 串口发给 M5Stack。
 - M5Stack 作为网关和监测屏，通过 ESP-NOW 转发给 Microduino。
-- Microduino 控制 DMX 灯光，并预留步进电机、继电器和安全状态机。
+- Microduino 控制两盏 DMX RGBW 灯，当前步进电机输出已启用于台架调试，继电器物理输出仍默认关闭。
 
 ## 当前主链路
 
@@ -38,6 +38,10 @@ Microduino --> DMX 灯光 / 步进电机 / 继电器
 - 兼容旧入口：`tools/eeg_serial_bridge.py`。
 - M5Stack USB 串口接收 `EEG` / `CMD`，屏幕显示实时状态，并通过 ESP-NOW 转发。
 - Microduino ESP-NOW 接收、DMX 灯光控制、安全总开关和状态回传。
+- Microduino DMX 使用 `GPIO5` 输出，两盏灯起始地址为 `001` 和 `005`。
+- 双灯流水光效已启用：灯 2 相对灯 1 错开 `96 / 256` 圈，形成前后流动感。
+- 左右步进电机输出已启用于台架调试：左 STEP/DIR 为 `GPIO27/GPIO26`，右 STEP/DIR 为 `GPIO25/GPIO14`。
+- 前端步进电机控制支持 `左右`、`左`、`右` 三种目标。
 - 前端真实状态监测：没有真实 EEG / M5 / MIC 回传时显示 `--` 或等待。
 - 前端控制按钮反馈：发送中、已发送、失败。
 - M5Stack A/B/C 按键控制系统开启、全部停止、系统关闭。
@@ -46,12 +50,13 @@ Microduino --> DMX 灯光 / 步进电机 / 继电器
 ## 当前安全原则
 
 - Microduino 上电默认 `systemEnabled = false`。
-- 没有收到 `SYSTEM_ENABLE` 前，所有机器默认关闭。
+- 没有收到 `SYSTEM_ENABLE` 前，灯光、继电器和步进电机都保持关闭 / 停止；手动灯光和步进电机台架调试也必须先系统开启。
 - 前端和 M5Stack 都可以发系统开启 / 关闭指令。
 - M5Stack 只负责显示和转发，不直接控制继电器、步进电机或灯光。
 - Microduino 必须在本地判断超时、信号差和安全状态。
 - 电脑串口断开、M5Stack 掉线或 ESP-NOW 丢包时，Microduino 必须在 2-3 秒内进入安全状态。
-- 继电器和步进电机物理输出默认关闭，等待硬件安全确认后再启用。
+- 继电器物理输出默认关闭，等待硬件安全确认后再启用。
+- 步进电机物理输出当前已启用于台架调试；接入真实机械负载前必须确认限位、方向、行程、电流和急停。
 
 ## 当前源码结构
 
@@ -64,6 +69,7 @@ Microduino --> DMX 灯光 / 步进电机 / 继电器
 │   │   ├── Dream使用说明总览.md
 │   │   ├── Dream电脑端与前端使用说明.md
 │   │   ├── Dream板卡固件烧录使用说明.md
+│   │   ├── DreamM5Stack屏幕界面说明.md
 │   │   ├── Dream现场开机与关机流程.md
 │   │   ├── Dream故障排查手册.md
 │   │   └── Dream接口与指令协议说明.md
@@ -79,6 +85,7 @@ Microduino --> DMX 灯光 / 步进电机 / 继电器
 └── src/
     ├── microduino_core_esp32_test/
     ├── microduino_core_esp32_dmx_spotlight_test/
+    ├── microduino_core_esp32_stepper_pin_diagnostic/
     ├── microduino_core_esp32_stepper_motor_test/
     ├── m5stack_core_esp32_test/
     └── esp32_wroom_32_test/
@@ -88,8 +95,10 @@ Microduino --> DMX 灯光 / 步进电机 / 继电器
 
 | 板子 | 环境名 | 当前用途 | 固件入口 |
 | --- | --- | --- | --- |
-| Microduino Core ESP32 | `microduino-core-esp32` | 执行控制器，接收 ESP-NOW EEG / CMD，控制 DMX 并管理安全状态 | `src/microduino_core_esp32_test/main.cpp` |
+| Microduino Core ESP32 | `microduino-core-esp32` | 执行控制器，接收 ESP-NOW EEG / CMD，控制双 DMX 灯、左右步进电机并管理安全状态 | `src/microduino_core_esp32_test/main.cpp` |
 | M5Stack Core ESP32 | `m5stack-core-esp32` | 电脑 USB 串口网关 + 监测屏，通过 ESP-NOW 转发 EEG / CMD | `src/m5stack_core_esp32_test/main.cpp` |
+| Microduino DMX 测试 | `microduino-core-esp32-dmx-spotlight-test` | 单项测试两盏 RGBW DMX 灯流水状态 | `src/microduino_core_esp32_dmx_spotlight_test/main.cpp` |
+| Microduino 步进引脚诊断 | `microduino-core-esp32-stepper-pin-diagnostic` | 单项诊断左右步进 STEP / DIR 输出 | `src/microduino_core_esp32_stepper_pin_diagnostic/main.cpp` |
 | ESP32-WROOM-32 | `esp32-wroom-32` | 预留测试板 | `src/esp32_wroom_32_test/main.cpp` |
 
 端口由 Windows 分配，换线、换 USB 口或换电脑后可能变化。实际使用前先运行：
@@ -147,10 +156,16 @@ pio run -e microduino-core-esp32
 pio run -e microduino-core-esp32 -t upload
 ```
 
-启动电脑端桥接和前端：
+启动电脑端桥接和前端。当前现场脚本默认使用脑电 `COM10@9600`、M5Stack `COM6@115200`：
 
 ```powershell
-python tools\dream_eeg_serial_bridge.py --source COM3 --target COM6 --source-baud 57600 --target-baud 115200 --send-rate 20
+powershell -ExecutionPolicy Bypass -File .\tools\start_dream_frontend.ps1
+```
+
+直接运行 Python 桥接程序时：
+
+```powershell
+python tools\dream_eeg_serial_bridge.py --source COM10 --target COM6 --source-baud 9600 --target-baud 115200 --send-rate 20
 ```
 
 如果系统 Python 没有 `pyserial`，可先安装：
@@ -163,6 +178,6 @@ python -m pip install pyserial
 
 - ESP-NOW 固定 peer MAC 和现场丢包测试。
 - 继电器物理输出引脚、触发电平和负载安全。
-- 步进电机引脚重新规划、限位和机械安全。
+- 步进电机机械限位、方向、行程、驱动器电流和负载安全。
 - 整机 30-60 分钟老化测试。
 - 正式现场硬件急停和负载断电方案。

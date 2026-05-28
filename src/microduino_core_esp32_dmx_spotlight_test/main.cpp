@@ -1,124 +1,93 @@
 #include <Arduino.h>
 #include <esp_dmx.h>
 
-// Microduino Core ESP32 射灯测试固件。
-// 通过 DMX512 / MAX485 测试两盏 RGBW 射灯。
-
 #define DMX_PORT DMX_NUM_1
 
-// 你现在接的是 ESP32 的 IO27
-const int DMX_TX_PIN = 27;
-
-// RX 和 EN 暂时不用
+const int DMX_TX_PIN = 5;
 const int DMX_RX_PIN = -1;
 const int DMX_EN_PIN = -1;
 
+const int DMX_LIGHT_1_ADDRESS = 1;
+const int DMX_LIGHT_2_ADDRESS = 5;
+const int FLOW_STEP_MS = 35;
+const byte FLOW_OFFSET = 96;
+
 byte dmxData[DMX_PACKET_SIZE];
 
-// 设置某一盏 RGBW 灯的颜色
-// startAddress 是灯的地址，比如 1 或 5
 void setLightColor(int startAddress, byte r, byte g, byte b, byte w) {
-  dmxData[startAddress]     = r;
+  dmxData[startAddress] = r;
   dmxData[startAddress + 1] = g;
   dmxData[startAddress + 2] = b;
   dmxData[startAddress + 3] = w;
 }
 
-// 发送 DMX 数据
-void sendDMX() {
+void sendDmx() {
   dmx_write(DMX_PORT, dmxData, DMX_PACKET_SIZE);
   dmx_send(DMX_PORT);
   dmx_wait_sent(DMX_PORT, DMX_TIMEOUT_TICK);
 }
 
-// 同时设置两盏灯
-void setTwoLights(
-  byte r1, byte g1, byte b1, byte w1,
-  byte r2, byte g2, byte b2, byte w2
-) {
+void setTwoLights(byte r1, byte g1, byte b1, byte w1,
+                  byte r2, byte g2, byte b2, byte w2) {
   memset(dmxData, 0, DMX_PACKET_SIZE);
-
-  // 灯1：地址 001
-  setLightColor(1, r1, g1, b1, w1);
-
-  // 灯2：地址 005
-  setLightColor(5, r2, g2, b2, w2);
-
-  sendDMX();
+  setLightColor(DMX_LIGHT_1_ADDRESS, r1, g1, b1, w1);
+  setLightColor(DMX_LIGHT_2_ADDRESS, r2, g2, b2, w2);
+  sendDmx();
 }
 
-// 持续显示某个画面
-void holdTwoLights(
-  byte r1, byte g1, byte b1, byte w1,
-  byte r2, byte g2, byte b2, byte w2,
-  int durationMs
-) {
-  unsigned long startTime = millis();
-
-  while (millis() - startTime < durationMs) {
-    setTwoLights(r1, g1, b1, w1, r2, g2, b2, w2);
-    delay(25);
+void wheelColor(byte position, byte brightness, byte &r, byte &g, byte &b) {
+  position = 255 - position;
+  if (position < 85) {
+    r = 255 - position * 3;
+    g = 0;
+    b = position * 3;
+  } else if (position < 170) {
+    position -= 85;
+    r = 0;
+    g = position * 3;
+    b = 255 - position * 3;
+  } else {
+    position -= 170;
+    r = position * 3;
+    g = 255 - position * 3;
+    b = 0;
   }
+
+  r = static_cast<byte>(static_cast<uint16_t>(r) * brightness / 255);
+  g = static_cast<byte>(static_cast<uint16_t>(g) * brightness / 255);
+  b = static_cast<byte>(static_cast<uint16_t>(b) * brightness / 255);
+}
+
+void showFlow(byte brightness = 255) {
+  byte r1 = 0;
+  byte g1 = 0;
+  byte b1 = 0;
+  byte r2 = 0;
+  byte g2 = 0;
+  byte b2 = 0;
+  const byte phase = static_cast<byte>((millis() / FLOW_STEP_MS) & 0xFF);
+
+  wheelColor(phase, brightness, r1, g1, b1);
+  wheelColor(static_cast<byte>(phase + FLOW_OFFSET), brightness, r2, g2, b2);
+  setTwoLights(r1, g1, b1, 0, r2, g2, b2, 0);
 }
 
 void setup() {
   Serial.begin(115200);
 
   dmx_config_t config = DMX_CONFIG_DEFAULT;
-
   dmx_personality_t personalities[] = {
-    {1, "Two RGBW Lights"}
+    {1, "Two RGBW Flow Lights"}
   };
-  int personality_count = 1;
 
-  dmx_driver_install(DMX_PORT, &config, personalities, personality_count);
+  dmx_driver_install(DMX_PORT, &config, personalities, 1);
   dmx_set_pin(DMX_PORT, DMX_TX_PIN, DMX_RX_PIN, DMX_EN_PIN);
-
   memset(dmxData, 0, DMX_PACKET_SIZE);
 
-  Serial.println("Two DMX RGBW lights test start");
+  Serial.println("Two DMX RGBW flow test start");
 }
 
 void loop() {
-  Serial.println("Test 1: Light1 Red, Light2 Blue");
-  holdTwoLights(
-    255, 0, 0, 0,     // 灯1 红
-    0, 0, 255, 0,     // 灯2 蓝
-    2000
-  );
-
-  Serial.println("Test 2: Light1 Green, Light2 Purple");
-  holdTwoLights(
-    0, 255, 0, 0,     // 灯1 绿
-    120, 0, 255, 0,   // 灯2 紫
-    2000
-  );
-
-  Serial.println("Test 3: Light1 White, Light2 Red");
-  holdTwoLights(
-    0, 0, 0, 255,     // 灯1 白
-    255, 0, 0, 0,     // 灯2 红
-    2000
-  );
-
-  Serial.println("Test 4: Both Cyan");
-  holdTwoLights(
-    0, 180, 255, 0,   // 灯1 青蓝
-    0, 180, 255, 0,   // 灯2 青蓝
-    2000
-  );
-
-  Serial.println("Test 5: Dream Bubble Color");
-  holdTwoLights(
-    120, 60, 255, 0,  // 灯1 蓝紫
-    255, 120, 180, 0, // 灯2 粉紫
-    3000
-  );
-
-  Serial.println("Test 6: Off");
-  holdTwoLights(
-    0, 0, 0, 0,
-    0, 0, 0, 0,
-    1000
-  );
+  showFlow();
+  delay(25);
 }

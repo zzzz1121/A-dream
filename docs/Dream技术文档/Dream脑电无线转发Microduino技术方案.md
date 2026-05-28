@@ -1,11 +1,13 @@
 # Dream 脑电转发到 Microduino 技术方案
 
-更新时间：2026-05-20  
+更新时间：2026-05-28
+
 当前决策：电脑通过 USB 串口直连 M5Stack，M5Stack 通过 ESP-NOW 转发给 Microduino。  
 适用范围：脑电数据从电脑进入装置、M5Stack 监测显示、Microduino 执行控制。
 
-补充更新：2026-05-20  
-电脑端同时提供浏览器实时前端。前端只显示真实 EEG、M5Stack 和 Microduino 回传状态；没有真实数据时显示 `--` 或等待。所有控制按钮都有发送中、已发送、失败反馈。
+补充更新：2026-05-28
+
+电脑端同时提供浏览器实时前端。前端只显示真实 EEG、M5Stack 和 Microduino 回传状态；没有真实数据时显示 `--` 或等待。所有控制按钮都有发送中、已发送、失败反馈。当前 Microduino 正式联动固件已支持两盏 DMX RGBW 灯、左右步进电机目标选择和状态回传；继电器物理输出仍默认关闭。
 
 ## 1. 当前结论
 
@@ -38,7 +40,7 @@ Microduino 只承担执行控制角色：
 ```text
 接收 ESP-NOW EEG 帧
 维护本地安全状态
-控制灯光 / 步进电机 / 继电器
+控制两盏 DMX 灯 / 左右步进电机 / 继电器状态机
 ```
 
 这个方案比电脑直接 Wi-Fi UDP 到 Microduino 更适合现场人多的情况，因为电脑到 M5Stack 是有线 USB，M5Stack 到 Microduino 使用 ESP-NOW 短包，不依赖热点、路由器或电脑无线网卡。
@@ -76,7 +78,7 @@ Microduino 负责安全
 | 脑电设备 | `eegDevice` | 蓝牙发送 ThinkGear 原始脑电数据到电脑 |
 | 电脑 | `pcBridge` | 读取脑电 COM，解析 ThinkGear，输出统一 EEG 帧到 M5Stack |
 | M5Stack | `m5GatewayMonitor` | USB 串口接收 EEG，屏幕显示，ESP-NOW 转发给 Microduino |
-| Microduino | `micController` | ESP-NOW 接收 EEG，控制灯光、电机、继电器 |
+| Microduino | `micController` | ESP-NOW 接收 EEG / CMD，控制双 DMX 灯、左右步进电机和继电器状态机 |
 | DMX 灯具 | `dmxLights` | 光效输出 |
 | 步进电机 | `stepperMotor` | 运动输出 |
 | 继电器 | `relayOutput` | 开关输出 |
@@ -168,15 +170,15 @@ M5Stack 收到 `EEG` 文本帧后：
 发送给 Microduino
 ```
 
-ESP-NOW 推荐使用固定 peer MAC，不建议长期使用 broadcast。
+当前原型使用 ESP-NOW broadcast peer，便于现场快速联调；正式运行时推荐改为固定 peer MAC，不建议长期使用 broadcast。
 
 推荐：
 
 ```text
 ESP-NOW channel: 固定，例如 1 或现场测试后选择
-peer: Microduino Wi-Fi MAC
+peer: broadcast peer；正式部署时改为 Microduino Wi-Fi MAC
 encrypt: 原型阶段 false，正式阶段可评估
-send mode: fixed peer unicast
+send mode: 原型 broadcast；正式 fixed peer unicast
 ```
 
 ### 4.4 Microduino 执行控制
@@ -190,7 +192,7 @@ Microduino 收到 ESP-NOW EEG 包后：
 更新 lastEegFrameMs
 更新 dropCount
 刷新安全状态
-驱动灯光 / 电机 / 继电器
+驱动双 DMX 灯 / 左右步进电机 / 继电器状态机
 ```
 
 Microduino 如果超过 2-3 秒没有收到有效 EEG 包，必须进入安全状态。
@@ -233,20 +235,21 @@ CMD,seq,timeMs,action,arg1,arg2,arg3,arg4
 
 ### 5.2 M5Stack 到 Microduino ESP-NOW 包
 
-推荐结构：
+当前结构：
 
 ```cpp
 struct DreamEegEspNowPacket {
   uint32_t magic;
   uint16_t version;
-  uint16_t size;
+  uint8_t type;
+  uint8_t flags;
   uint32_t seq;
-  uint32_t timeMs;
+  uint32_t pcTimeMs;
   uint32_t m5UptimeMs;
   uint8_t poorSignal;
   uint8_t attention;
   uint8_t meditation;
-  uint8_t flags;
+  uint8_t reserved;
   uint32_t eegPower[8];
   uint16_t checksum;
 };
@@ -272,6 +275,35 @@ DREA
 | 1 | `EEG_FLAG_SOURCE_TIMEOUT` | M5Stack 长时间没有收到电脑数据 |
 | 2 | `EEG_FLAG_CHECKSUM_OK` | 电脑端 ThinkGear 校验通过 |
 
+控制包当前结构：
+
+```cpp
+struct DreamControlEspNowPacket {
+  uint32_t magic;
+  uint16_t version;
+  uint8_t type;
+  uint8_t flags;
+  uint32_t seq;
+  uint32_t pcTimeMs;
+  uint32_t m5UptimeMs;
+  uint8_t action;
+  uint8_t reserved;
+  uint16_t arg1;
+  uint16_t arg2;
+  uint16_t arg3;
+  uint16_t arg4;
+  uint16_t checksum;
+};
+```
+
+步进电机控制约定：
+
+| 字段 | 含义 |
+| --- | --- |
+| `arg1` | 步数，`0` 时按一圈 `1600` 步处理 |
+| `arg2` | 目标掩码：`1` 左、`2` 右、`3` 左右，`0` 也按左右处理 |
+| `arg3 / arg4` | 当前保留 |
+
 ### 5.3 M5Stack 本地显示状态
 
 M5Stack 不需要从 Microduino 回传才能显示基础脑电状态。
@@ -296,9 +328,15 @@ fail count
 ```text
 lightMode
 lightLevel
+light1Rgbw
+light2Rgbw
 stepperState
 relayState
 safetyState
+manualLightEnabled
+relayOutputEnabled
+stepperOutputEnabled
+systemEnabled
 micRxCount
 micDropCount
 ```
@@ -338,7 +376,7 @@ Microduino 灯光 / 继电器 / 电机 / 安全状态
 
 - 串口接收和 ESP-NOW 转发优先于屏幕刷新。
 - 屏幕使用局部刷新，不能整屏高频刷新。
-- Microduino 控制灯光可以 25-40 ms 刷新一次，但 EEG 目标值用最近一次有效数据。
+- Microduino 当前 DMX 刷新间隔为 `50 ms`，EEG 目标值使用最近一次有效数据。
 
 ## 7. 丢包与超时策略
 
@@ -421,9 +459,12 @@ Microduino 端原则：
 灯光：
 
 ```text
-attention -> 亮度 / 暖色
-meditation -> 蓝紫色 / 柔和程度
-poorSignal -> 是否接受当前帧
+attention / meditation -> 流水亮度
+attention -> 色轮相位偏移
+灯 1 -> 当前相位
+灯 2 -> 当前相位 + 96/256 圈
+poorSignal > 120 -> 信号差提示色
+EEG 超时或系统关闭 -> 关闭
 ```
 
 继电器：
@@ -435,7 +476,8 @@ OFF -> ARMING -> ON -> COOLDOWN -> OFF
 步进电机：
 
 ```text
-DISABLED -> IDLE -> MOVING / BREATHING -> STOPPING -> IDLE
+DISABLED -> IDLE -> MOVING / BREATHING -> IDLE
+前端目标：左 / 右 / 左右
 ```
 
 ## 10. 实施阶段
@@ -490,7 +532,7 @@ EEG -> M5Stack -> ESP-NOW -> Microduino -> DMX 灯光
 目标：
 
 ```text
-在链路稳定后加入继电器安全状态机和步进电机非阻塞状态机
+在链路稳定后加入继电器安全状态机；步进电机当前已进入台架调试输出阶段，需要继续验证机械限位和负载安全
 ```
 
 ## 11. 测试清单
@@ -539,7 +581,7 @@ M5Stack 明确显示链路异常
 M5Stack 显示 EEG 和链路状态
 M5Stack ESP-NOW -> Microduino
 Microduino 本地安全状态机
-Microduino 控制 DMX / 步进 / 继电器
+Microduino 控制双 DMX 灯、左右步进电机和继电器状态机
 ```
 
 核心原则：

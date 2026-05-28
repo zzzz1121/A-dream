@@ -1,6 +1,7 @@
 # Dream 命名规范
 
-更新时间：2026-05-20  
+更新时间：2026-05-28
+
 用途：统一 Dream 装置后续文档、代码、协议、变量、日志和文件命名。  
 适用范围：`docs/` 文档、`src/` 固件、`tools/` 电脑端脚本、USB 串口、ESP-NOW 协议、调试日志。
 
@@ -49,6 +50,7 @@
 | `docs/Dream使用说明/Dream使用说明总览.md` | 使用说明入口 |
 | `docs/Dream使用说明/Dream电脑端与前端使用说明.md` | 电脑端脚本和浏览器前端使用说明 |
 | `docs/Dream使用说明/Dream板卡固件烧录使用说明.md` | M5Stack 和 Microduino 固件烧录说明 |
+| `docs/Dream使用说明/DreamM5Stack屏幕界面说明.md` | M5Stack 屏幕字段、按键和现场读屏判断 |
 | `docs/Dream使用说明/Dream现场开机与关机流程.md` | 现场开机、测试、运行、关机流程 |
 | `docs/Dream使用说明/Dream故障排查手册.md` | 常见故障和排查步骤 |
 | `docs/Dream使用说明/Dream接口与指令协议说明.md` | EEG、CMD、ESP-NOW 和状态回传协议说明 |
@@ -73,6 +75,7 @@
 | `src/m5stack_core_esp32_test/` | M5Stack 原型固件 |
 | `src/esp32_wroom_32_test/` | ESP32-WROOM 测试固件 |
 | `src/microduino_core_esp32_dmx_spotlight_test/` | DMX 灯光测试固件 |
+| `src/microduino_core_esp32_stepper_pin_diagnostic/` | 左右步进电机引脚诊断固件 |
 
 正式阶段建议目录：
 
@@ -132,6 +135,8 @@
 | `microduino-core-esp32` | Microduino 原型 |
 | `m5stack-core-esp32` | M5Stack 原型 |
 | `esp32-wroom-32` | ESP32-WROOM 测试 |
+| `microduino-core-esp32-dmx-spotlight-test` | Microduino 双 DMX 灯测试 |
+| `microduino-core-esp32-stepper-pin-diagnostic` | Microduino 左右步进引脚诊断 |
 
 正式阶段建议环境：
 
@@ -180,7 +185,9 @@ Wi-Fi UDP 只作为调试备选，不作为当前主链路命名基准。
 | --- | --- | --- |
 | `EEG` | `pcBridge -> m5GatewayMonitor` | 串口脑电状态文本帧 |
 | `DREAM_EEG_PACKET` | `m5GatewayMonitor -> micController` | ESP-NOW 脑电结构包 |
-| `MIC` | `micController -> m5GatewayMonitor` | 可选 Microduino 执行状态帧 |
+| `CMD` | `pcBridge -> m5GatewayMonitor` | 串口控制指令文本帧 |
+| `DREAM_CONTROL_PACKET` | `m5GatewayMonitor -> micController` | ESP-NOW 控制结构包 |
+| `MIC` | `micController -> m5GatewayMonitor` | Microduino 执行状态帧 |
 | `PING` | 任意方向 | 可选心跳 |
 | `ACK` | 任意方向 | 可选确认 |
 
@@ -228,7 +235,7 @@ M5,seq,timeMs,serialFrames,serialErrors,espNowSent,espNowFailed,lastErrorCode
 ### 8.4 MIC 帧字段
 
 ```text
-MIC,seq,timeMs,eegAgeMs,rxCount,dropCount,lightMode,lightLevel,stepperState,relayState,timeout
+MIC,seq,timeMs,eegAgeMs,rxCount,dropCount,lightMode,lightLevel,light1Rgbw,light2Rgbw,stepperState,relayState,safetyState,systemEnabled
 ```
 
 ## 9. C++ 命名规范
@@ -256,9 +263,14 @@ constexpr uint32_t EEG_TIMEOUT_MS = 3000;
 | `M5_GATEWAY_MAC` | M5Stack MAC |
 | `EEG_TIMEOUT_MS` | EEG 超时时间 |
 | `DMX_TX_PIN` | DMX 发送引脚 |
-| `STEPPER_STEP_PIN` | 步进 STEP 引脚 |
-| `STEPPER_DIR_PIN` | 步进 DIR 引脚 |
-| `STEPPER_EN_PIN` | 步进 EN 引脚 |
+| `STEPPER_LEFT_STEP_PIN` | 左步进 STEP 引脚 |
+| `STEPPER_LEFT_DIR_PIN` | 左步进 DIR 引脚 |
+| `STEPPER_RIGHT_STEP_PIN` | 右步进 STEP 引脚 |
+| `STEPPER_RIGHT_DIR_PIN` | 右步进 DIR 引脚 |
+| `STEPPER_ENABLE_PIN` | 步进 EN 引脚 |
+| `STEPPER_TARGET_LEFT` | 左电机目标掩码 |
+| `STEPPER_TARGET_RIGHT` | 右电机目标掩码 |
+| `STEPPER_TARGET_BOTH` | 左右电机目标掩码 |
 | `RELAY_FOG_PIN` | 造雾或继电器控制引脚 |
 
 ### 9.2 结构体和类型
@@ -359,8 +371,8 @@ dream_eeg_log_replay.py
 使用 `snake_case`：
 
 ```python
-source_port = "COM3"
-source_baud = 57600
+source_port = "COM10"
+source_baud = 9600
 target_port = "COM6"
 target_baud = 115200
 send_rate_hz = 20
@@ -456,6 +468,7 @@ EVENT=EEG_TIMEOUT AGE_MS=3050 ACTION=SAFE_STATE
 | `LIGHT_EEG_BLEND` | EEG 混合光效 |
 | `LIGHT_SIGNAL_BAD` | 信号差提示 |
 | `LIGHT_TIMEOUT` | 超时安全状态 |
+| `LIGHT_MANUAL` | 前端手动灯光 |
 
 ### 12.3 步进电机状态
 
@@ -463,7 +476,6 @@ EVENT=EEG_TIMEOUT AGE_MS=3050 ACTION=SAFE_STATE
 | --- | --- |
 | `STEPPER_DISABLED` | 电机禁用 |
 | `STEPPER_IDLE` | 待机 |
-| `STEPPER_HOMING` | 回零 |
 | `STEPPER_MOVING` | 运动中 |
 | `STEPPER_BREATHING` | 呼吸式往复 |
 | `STEPPER_LIMITED` | 限位触发 |
@@ -498,9 +510,11 @@ EVENT=EEG_TIMEOUT AGE_MS=3050 ACTION=SAFE_STATE
 | `DMX_TX_PIN` | DMX 数据输出 |
 | `RS485_DE_PIN` | RS485 发送使能 |
 | `RS485_RE_PIN` | RS485 接收使能 |
-| `STEPPER_STEP_PIN` | 步进脉冲 |
-| `STEPPER_DIR_PIN` | 步进方向 |
-| `STEPPER_EN_PIN` | 步进使能 |
+| `STEPPER_LEFT_STEP_PIN` | 左步进脉冲 |
+| `STEPPER_LEFT_DIR_PIN` | 左步进方向 |
+| `STEPPER_RIGHT_STEP_PIN` | 右步进脉冲 |
+| `STEPPER_RIGHT_DIR_PIN` | 右步进方向 |
+| `STEPPER_ENABLE_PIN` | 步进使能 |
 | `LIMIT_MIN_PIN` | 最小限位 |
 | `LIMIT_MAX_PIN` | 最大限位 |
 | `RELAY_FOG_PIN` | 造雾继电器 |

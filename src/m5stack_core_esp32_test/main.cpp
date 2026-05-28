@@ -14,6 +14,8 @@
 #define STATUS_PRINT_MS 1000
 #define SERIAL_TIMEOUT_MS 3000
 #define MIC_STATUS_TIMEOUT_MS 3000
+#define CONTROL_SEND_REPEATS 5
+#define CONTROL_SEND_REPEAT_DELAY_MS 20
 #define DREAM_PACKET_MAGIC 0x44524541UL
 #define DREAM_PROTOCOL_VERSION 1
 
@@ -113,6 +115,14 @@ struct __attribute__((packed)) DreamMicStatusPacket {
   uint8_t meditation;
   uint8_t lightLevel;
   uint8_t lightMode;
+  uint8_t light1R;
+  uint8_t light1G;
+  uint8_t light1B;
+  uint8_t light1W;
+  uint8_t light2R;
+  uint8_t light2G;
+  uint8_t light2B;
+  uint8_t light2W;
   uint8_t stepperState;
   uint8_t relayState;
   uint8_t safetyState;
@@ -434,28 +444,43 @@ void sendControlToMicroduino(DreamControlEspNowPacket &packet) {
     return;
   }
 
-  packet.m5UptimeMs = millis();
-  packet.checksum = 0;
-  packet.checksum = calculatePacketChecksum(packet);
+  bool sent = false;
+  esp_err_t lastResult = ESP_OK;
+  for (uint8_t attempt = 0; attempt < CONTROL_SEND_REPEATS; attempt++) {
+    packet.m5UptimeMs = millis();
+    packet.checksum = 0;
+    packet.checksum = calculatePacketChecksum(packet);
 
-  const esp_err_t result = esp_now_send(BROADCAST_MAC,
-                                        reinterpret_cast<const uint8_t *>(&packet),
-                                        sizeof(packet));
-  if (result == ESP_OK) {
+    lastResult = esp_now_send(BROADCAST_MAC,
+                              reinterpret_cast<const uint8_t *>(&packet),
+                              sizeof(packet));
+    if (lastResult == ESP_OK) {
+      sent = true;
+      espNowSendCount++;
+      espNowLastSendMs = millis();
+    } else {
+      espNowSendFailCount++;
+    }
+
+    if (attempt + 1 < CONTROL_SEND_REPEATS) {
+      delay(CONTROL_SEND_REPEAT_DELAY_MS);
+    }
+  }
+
+  if (sent) {
     controlSendCount++;
-    espNowSendCount++;
-    espNowLastSendMs = millis();
     Serial.print("EVENT=CONTROL_TX SEQ=");
     Serial.print(packet.seq);
     Serial.print(" ACTION=");
-    Serial.println(packet.action);
+    Serial.print(packet.action);
+    Serial.print(" REPEATS=");
+    Serial.println(CONTROL_SEND_REPEATS);
   } else {
     controlSendFailCount++;
-    espNowSendFailCount++;
     Serial.print("EVENT=CONTROL_TX_FAIL SEQ=");
     Serial.print(packet.seq);
     Serial.print(" ERR=");
-    Serial.println(result);
+    Serial.println(lastResult);
   }
 }
 
@@ -656,6 +681,7 @@ void drawDashboardContent(Canvas &canvas, int16_t yShift) {
   const uint32_t now = millis();
   const uint32_t serialAgeMs = haveEeg ? now - lastSerialFrameMs : 0xFFFFFFFFUL;
   const uint32_t micAgeMs = haveMicStatus ? now - lastMicStatusMs : 0xFFFFFFFFUL;
+  const bool micStatusFresh = haveMicStatus && micAgeMs < MIC_STATUS_TIMEOUT_MS;
   const uint8_t displayedPoorSignal = haveEeg ? latestEegPacket.poorSignal : 255;
   const uint32_t alphaPower = latestEegPacket.eegPower[2] + latestEegPacket.eegPower[3];
   const uint32_t betaPower = latestEegPacket.eegPower[4] + latestEegPacket.eegPower[5];
@@ -716,7 +742,7 @@ void drawDashboardContent(Canvas &canvas, int16_t yShift) {
   canvas.setTextColor(ageColor(micAgeMs, 1000, MIC_STATUS_TIMEOUT_MS), 0x0000);
   canvas.setCursor(8, 190 + yShift);
   canvas.printf("MIC:%s age:%lums rx:%lu drop:%lu",
-                haveMicStatus && micAgeMs < MIC_STATUS_TIMEOUT_MS ? "OK" : "WAIT",
+                micStatusFresh ? "OK" : "WAIT",
                 haveMicStatus ? static_cast<unsigned long>(micAgeMs) : 0,
                 static_cast<unsigned long>(latestMicStatus.rxCount),
                 static_cast<unsigned long>(latestMicStatus.dropCount));
@@ -724,7 +750,7 @@ void drawDashboardContent(Canvas &canvas, int16_t yShift) {
   canvas.fillRect(0, 204 + yShift, 320, 14, 0x0000);
   canvas.setTextColor(0xFFFF, 0x0000);
   canvas.setCursor(8, 206 + yShift);
-  if (haveMicStatus && micAgeMs < MIC_STATUS_TIMEOUT_MS) {
+  if (micStatusFresh) {
     canvas.printf("Light:%s %u  Step:%s",
                   lightModeName(latestMicStatus.lightMode),
                   latestMicStatus.lightLevel,
@@ -734,7 +760,7 @@ void drawDashboardContent(Canvas &canvas, int16_t yShift) {
   }
   canvas.fillRect(0, 220 + yShift, 320, 14, 0x0000);
   canvas.setCursor(8, 222 + yShift);
-  if (haveMicStatus && micAgeMs < MIC_STATUS_TIMEOUT_MS) {
+  if (micStatusFresh) {
     canvas.printf("Relay:%s  Safety:%s",
                   relayStateName(latestMicStatus.relayState),
                   safetyStateName(latestMicStatus.safetyState));
@@ -743,8 +769,8 @@ void drawDashboardContent(Canvas &canvas, int16_t yShift) {
   }
 
   canvas.setCursor(212, 222 + yShift);
-  canvas.setTextColor(haveMicStatus && latestMicStatus.systemEnabled ? 0x07E0 : 0xF800, 0x0000);
-  canvas.printf("SYS:%s", haveMicStatus && latestMicStatus.systemEnabled ? "ON" : "OFF");
+  canvas.setTextColor(micStatusFresh && latestMicStatus.systemEnabled ? 0x07E0 : 0xF800, 0x0000);
+  canvas.printf("SYS:%s", micStatusFresh && latestMicStatus.systemEnabled ? "ON" : "OFF");
 }
 
 void drawDashboard() {
@@ -753,6 +779,8 @@ void drawDashboard() {
 
 void printStatus() {
   const uint32_t now = millis();
+  const uint32_t micAgeMs = haveMicStatus ? now - lastMicStatusMs : 0;
+  const bool micStatusFresh = haveMicStatus && micAgeMs < MIC_STATUS_TIMEOUT_MS;
   Serial.print("EVENT=M5_STATUS SERIAL_FRAMES=");
   Serial.print(serialFrameCount);
   Serial.print(" SERIAL_ERRORS=");
@@ -768,11 +796,11 @@ void printStatus() {
   Serial.print(" CMD_FAIL=");
   Serial.print(controlSendFailCount);
   Serial.print(" MIC_STATUS=");
-  Serial.print(haveMicStatus ? "YES" : "NO");
+  Serial.print(micStatusFresh ? "YES" : "NO");
   Serial.print(" SERIAL_AGE_MS=");
   Serial.print(haveEeg ? now - lastSerialFrameMs : 0);
   Serial.print(" MIC_AGE_MS=");
-  Serial.print(haveMicStatus ? now - lastMicStatusMs : 0);
+  Serial.print(micAgeMs);
   Serial.print(" EEG_SEQ=");
   Serial.print(haveEeg ? latestEegPacket.seq : 0);
   Serial.print(" POOR_SIGNAL=");
@@ -791,6 +819,22 @@ void printStatus() {
   Serial.print(latestMicStatus.lightMode);
   Serial.print(" MIC_LIGHT_LEVEL=");
   Serial.print(latestMicStatus.lightLevel);
+  Serial.print(" MIC_L1_R=");
+  Serial.print(latestMicStatus.light1R);
+  Serial.print(" MIC_L1_G=");
+  Serial.print(latestMicStatus.light1G);
+  Serial.print(" MIC_L1_B=");
+  Serial.print(latestMicStatus.light1B);
+  Serial.print(" MIC_L1_W=");
+  Serial.print(latestMicStatus.light1W);
+  Serial.print(" MIC_L2_R=");
+  Serial.print(latestMicStatus.light2R);
+  Serial.print(" MIC_L2_G=");
+  Serial.print(latestMicStatus.light2G);
+  Serial.print(" MIC_L2_B=");
+  Serial.print(latestMicStatus.light2B);
+  Serial.print(" MIC_L2_W=");
+  Serial.print(latestMicStatus.light2W);
   Serial.print(" MIC_STEPPER=");
   Serial.print(latestMicStatus.stepperState);
   Serial.print(" MIC_RELAY=");

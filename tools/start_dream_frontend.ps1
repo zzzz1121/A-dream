@@ -1,7 +1,7 @@
 param(
   [string]$Source = "COM10",
   [string]$Target = "COM6",
-  [int]$SourceBaud = 57600,
+  [int]$SourceBaud = 9600,
   [int]$TargetBaud = 115200,
   [double]$SendRate = 20.0,
   [string]$WebHost = "127.0.0.1",
@@ -27,6 +27,30 @@ if (!(Test-Path $bridgeScript)) {
 
 New-Item -ItemType Directory -Force $logDir | Out-Null
 
+function Use-AvailableLogPath {
+  param([string]$Path)
+
+  if (!(Test-Path $Path)) {
+    return $Path
+  }
+
+  try {
+    Clear-Content -LiteralPath $Path -ErrorAction Stop
+    return $Path
+  } catch {
+    $directory = Split-Path -Parent $Path
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($Path)
+    $extension = [System.IO.Path]::GetExtension($Path)
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $fallback = Join-Path $directory "$name.$timestamp$extension"
+    Write-Host "Log file is busy, using: $fallback"
+    return $fallback
+  }
+}
+
+$outLog = Use-AvailableLogPath $outLog
+$errLog = Use-AvailableLogPath $errLog
+
 $existing = Get-NetTCPConnection -LocalAddress $WebHost -LocalPort $WebPort -State Listen -ErrorAction SilentlyContinue
 if ($existing) {
   Write-Host "Dream frontend already appears to be listening at http://${WebHost}:${WebPort}/"
@@ -35,6 +59,7 @@ if ($existing) {
 }
 
 $arguments = @(
+  "-u",
   $bridgeScript,
   "--source", $Source,
   "--target", $Target,

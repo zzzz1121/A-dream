@@ -1,6 +1,6 @@
 # Dream 故障排查手册
 
-更新时间：2026-05-20
+更新时间：2026-05-28
 
 ## 1. 前端打不开
 
@@ -19,7 +19,7 @@ http://127.0.0.1:8765/ 无法打开
 换端口示例：
 
 ```powershell
-python tools\dream_eeg_serial_bridge.py --source COM3 --target COM6 --web-port 8766
+powershell -ExecutionPolicy Bypass -File .\tools\start_dream_frontend.ps1 -WebPort 8766
 ```
 
 然后打开：
@@ -74,7 +74,7 @@ pio device list
 - 脑电设备是否开机。
 - 脑电设备是否蓝牙连接到电脑。
 - `--source` 是否是脑电蓝牙 COM 口。
-- `--source-baud` 是否正确，当前默认 `57600`。
+- `--source-baud` 是否正确。Python 脚本默认 `57600`，当前现场启动脚本默认 `9600`。
 - 脑电设备是否正在发送 ThinkGear 原始包。
 
 前端没有收到真实 EEG 包时，脑电字段会显示 `--`，这是正常空状态，不是模拟数据。前端中的 `validPackets` 应持续增加。如果 `rawBytes` 增加但 `validPackets` 不增加，可能是波特率错误或协议不匹配。
@@ -143,9 +143,9 @@ MIC:WAIT
 | --- | --- |
 | 灯光 | DMX 接线、灯具地址、MAX485、电源 |
 | 继电器 / 雾机 | `DREAM_ENABLE_RELAY_OUTPUT` 是否为 `1` |
-| 步进电机 | `DREAM_ENABLE_STEPPER_OUTPUT` 是否为 `1` |
+| 步进电机 | `DREAM_ENABLE_STEPPER_OUTPUT` 是否为 `1`，目标是否选对左 / 右 / 左右 |
 
-当前继电器和步进电机默认物理输出关闭。前端按钮会发送命令，但 Microduino 不会真正输出引脚，直到你在固件里启用对应宏。
+当前继电器默认物理输出关闭。步进电机物理输出已经启用用于台架调试；如果接了真实机械负载，先确认驱动器、电流、方向、限位、行程和急停。
 
 ## 8. 前端状态一直显示 `--`
 
@@ -168,7 +168,7 @@ MIC:WAIT
 - Microduino 是否在线。
 - DMX 灯地址是否为 001 和 005。
 - 灯具是否处于 RGBW 4 通道模式。
-- MAX485 DI 是否接到 `GPIO27`。
+- MAX485 DI 是否接到 `GPIO5`。
 - DMX+ / DMX- 是否接反。
 - 灯具电源是否正常。
 
@@ -218,10 +218,12 @@ src/microduino_core_esp32_dmx_spotlight_test/main.cpp
 - 驱动器 EN 是否需要接线。
 - 驱动器细分和电流限流是否正确。
 - Microduino GND 是否与驱动器控制地相连。
+- 前端目标是否选择了正确的 `左`、`右` 或 `左右`。
+- `arg2` 目标掩码是否为 `1`、`2` 或 `3`。
 
 注意：
 
-当前 DMX 使用 `GPIO27`，正式启用步进电机前仍需要统一规划 DMX、步进和继电器引脚。
+当前 DMX 使用 `GPIO5`，左电机 STEP/DIR 为 `GPIO27/GPIO26`，右电机 STEP/DIR 为 `GPIO25/GPIO14`。接入真实机械负载前仍需要确认限位、方向、行程和硬件急停。
 
 ## 13. 系统运行一段时间后自动关闭
 
