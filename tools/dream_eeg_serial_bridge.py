@@ -43,6 +43,9 @@ CONTROL_ACTIONS = {
     "stepper_backward": "STEPPER_BACKWARD",
     "stepper_stop": "STEPPER_STOP",
     "all_stop": "ALL_STOP",
+    "fan_on": "FAN_ON",
+    "fan_off": "FAN_OFF",
+    "bubble_trigger": "BUBBLE_TRIGGER",
 }
 EEG_POWER_FIELDS = (
     "delta",
@@ -356,31 +359,45 @@ INDEX_HTML = r"""<!doctype html>
       justify-content: space-between;
       gap: 10px;
     }
+    .control-status {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .control-status.single { grid-template-columns: minmax(0, 1fr); }
+    .device-control-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .device-control {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+    .control-state {
+      min-height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfaf6;
+      padding: 7px 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .control-state strong {
+      color: var(--ink);
+      font-size: 13px;
+      white-space: nowrap;
+    }
     .step-row {
       display: grid;
       grid-template-columns: 44px minmax(0, 1fr) 82px;
       gap: 10px;
       align-items: center;
-    }
-    .segmented {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 6px;
-      padding: 4px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface-soft);
-    }
-    .segmented button {
-      min-height: 34px;
-      border-color: transparent;
-      background: transparent;
-      box-shadow: none;
-    }
-    .segmented button.is-selected {
-      color: #f8f7f1;
-      background: #343632;
-      border-color: #343632;
     }
     .mood-grid {
       display: grid;
@@ -465,8 +482,7 @@ INDEX_HTML = r"""<!doctype html>
     @media (max-width: 680px) {
       main, aside { padding: 14px; }
       .hero, .section-head, .control-title { align-items: flex-start; flex-direction: column; }
-      .button-row, .button-row.two, .button-row.single, .mood-grid, .metric-grid.three, .metric-grid.four, .freq-grid { grid-template-columns: 1fr; }
-      .segmented { grid-template-columns: 1fr; }
+      .button-row, .button-row.two, .button-row.single, .control-status, .control-status.single, .device-control-grid, .mood-grid, .metric-grid.three, .metric-grid.four, .freq-grid { grid-template-columns: 1fr; }
       .step-row { grid-template-columns: 1fr; }
     }
   </style>
@@ -532,9 +548,17 @@ INDEX_HTML = r"""<!doctype html>
             <div class="section-head"><h2>Microduino 执行状态</h2><span id="micAge" class="pill neutral">-- ms</span></div>
             <div class="metric-grid four">
               <div class="metric"><div class="label">灯光</div><div class="value small" id="lightMode">--</div><div class="label" id="lightLevel">level --</div></div>
-              <div class="metric"><div class="label">雾机 / 继电器</div><div class="value small" id="relayState">--</div><div class="label" id="relayEnabled">--</div></div>
+              <div class="metric"><div class="label">雾机 / 风扇</div><div class="value small" id="relayState">--</div><div class="label" id="relayEnabled">--</div></div>
               <div class="metric"><div class="label">步进电机</div><div class="value small" id="stepperState">--</div><div class="label" id="stepperEnabled">--</div></div>
               <div class="metric"><div class="label">安全状态</div><div class="value small" id="safetyState">--</div><div class="label" id="lastAction">action --</div></div>
+            </div>
+          </section>
+          <section>
+            <div class="section-head"><h2>按压触发</h2><span id="pressureSource" class="pill neutral">M5</span></div>
+            <div class="metric-grid three">
+              <div class="metric"><div class="label">按压状态</div><div class="value small" id="pressureState">--</div><div class="label">传感器</div></div>
+              <div class="metric"><div class="label">上次触发</div><div class="value small" id="pressureLast">--</div><div class="label" id="pressureCount">count --</div></div>
+              <div class="metric"><div class="label">泡泡流程</div><div class="value small" id="bubbleState">--</div><div class="label" id="bubbleDetail">--</div></div>
             </div>
           </section>
           <section>
@@ -549,19 +573,24 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="stack">
           <section class="control-panel">
-            <div class="section-head"><h2>机器控制</h2><span id="commandStatus" class="pill warn">等待串口</span></div>
-            <div class="button-row">
+            <div class="section-head"><h2>机器控制</h2></div>
+            <div class="button-row two">
               <button class="good" data-action="system_enable">系统开启</button>
               <button class="danger" data-action="system_disable">系统关闭</button>
-              <button class="danger" data-action="all_stop">全部停止</button>
+            </div>
+            <div class="button-row single">
+              <button class="primary" data-action="bubble_trigger">触发泡泡流程</button>
             </div>
             <div class="control-block">
               <div class="control-title"><h2>灯光状态</h2><span id="lightMood" class="pill neutral">手动</span></div>
+              <div class="control-status single">
+                <div class="control-state"><span>当前状态</span><strong id="lightCurrentState">--</strong></div>
+              </div>
               <div class="mood-grid">
                 <button class="mood-button" data-action="light_auto" style="--mood: linear-gradient(135deg, #d8dde6, #78c6b8);"><span>自动</span><small>脑电</small></button>
                 <button class="mood-button" data-action="light_color" data-color="#ff5cc8" data-white="18" style="--mood: linear-gradient(135deg, #ff5cc8, #8d5cff);"><span>粉紫</span><small>冥想</small></button>
                 <button class="mood-button" data-action="light_color" data-color="#20c7bd" data-white="8" style="--mood: linear-gradient(135deg, #20c7bd, #2878ff);"><span>蓝绿</span><small>平静</small></button>
-                <button class="mood-button" data-action="light_color" data-color="#4b7dff" data-white="0" style="--mood: linear-gradient(135deg, #4b7dff, #7b4dff);"><span>蓝紫</span><small>专注</small></button>
+                <button class="mood-button" data-action="light_color" data-color="#4b7dff" data-white="0" style="--mood: linear-gradient(135deg, #4b7dff, #245cff);"><span>蓝紫</span><small>专注</small></button>
                 <button class="mood-button" data-action="light_color" data-color="#ff8a4c" data-white="12" style="--mood: linear-gradient(135deg, #ff8a4c, #ff5fb1);"><span>琥珀</span><small>唤醒</small></button>
                 <button class="mood-button" data-action="light_color" data-color="#294fcf" data-white="0" style="--mood: linear-gradient(135deg, #294fcf, #1dd6c9);"><span>深海</span><small>入梦</small></button>
               </div>
@@ -570,19 +599,26 @@ INDEX_HTML = r"""<!doctype html>
               </div>
             </div>
             <div class="control-block">
-              <div class="control-title"><h2>雾机 / 继电器</h2><span id="relayHint" class="pill neutral">--</span></div>
-              <div class="button-row two">
-                <button class="good" data-action="relay_on">开启</button>
-                <button data-action="relay_off">停止</button>
+              <div class="control-title"><h2>烟雾机 / 风扇</h2><span id="relayHint" class="pill neutral">--</span></div>
+              <div class="device-control-grid">
+                <div class="device-control">
+                  <div class="control-state"><span>烟雾机当前</span><strong id="fogCurrentState">--</strong></div>
+                  <div class="button-row two">
+                    <button class="good" data-action="relay_on">开启</button>
+                    <button data-action="relay_off">停止</button>
+                  </div>
+                </div>
+                <div class="device-control">
+                  <div class="control-state"><span>风扇当前</span><strong id="fanCurrentState">--</strong></div>
+                  <div class="button-row two">
+                    <button class="good" data-action="fan_on">开启</button>
+                    <button data-action="fan_off">停止</button>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="control-block">
               <div class="control-title"><h2>步进电机</h2><span id="stepperHint" class="pill neutral">--</span></div>
-              <div class="segmented" role="group" aria-label="步进电机目标">
-                <button type="button" class="is-selected" data-stepper-target="3">左右</button>
-                <button type="button" data-stepper-target="1">左</button>
-                <button type="button" data-stepper-target="2">右</button>
-              </div>
               <div class="step-row">
                 <span class="label">圈数</span>
                 <input id="stepperTurns" type="number" min="0.1" max="20" step="0.1" value="1" aria-label="步进电机圈数">
@@ -612,8 +648,9 @@ INDEX_HTML = r"""<!doctype html>
     const lightModes = ["OFF", "IDLE", "EEG", "BAD", "TIMEOUT", "MANUAL"];
     const stepperStates = ["DISABLED", "IDLE", "MOVING", "BREATH", "LIMIT", "FAULT"];
     const relayStates = ["OFF", "ARMING", "ON", "COOL", "FAULT"];
+    const bubbleStates = ["IDLE", "FOG", "BLOW", "TAIL"];
     const safetyStates = ["NORMAL", "SIGNAL", "TIMEOUT", "ESTOP", "FAULT"];
-    const controlActions = ["NONE", "SYSTEM_ENABLE", "SYSTEM_DISABLE", "LIGHT_AUTO", "LIGHT_COLOR", "LIGHT_OFF", "RELAY_ON", "RELAY_OFF", "STEPPER_FORWARD", "STEPPER_BACKWARD", "STEPPER_STOP", "ALL_STOP"];
+    const controlActions = ["NONE", "SYSTEM_ENABLE", "SYSTEM_DISABLE", "LIGHT_AUTO", "LIGHT_COLOR", "LIGHT_OFF", "RELAY_ON", "RELAY_OFF", "STEPPER_FORWARD", "STEPPER_BACKWARD", "STEPPER_STOP", "ALL_STOP", "FAN_ON", "FAN_OFF", "BUBBLE_TRIGGER"];
     const EEG_POWER_FIELDS = ["delta", "theta", "lowAlpha", "highAlpha", "lowBeta", "highBeta", "lowGamma", "midGamma"];
     const STEPPER_STEPS_PER_REV = 1600;
     const ids = {};
@@ -624,27 +661,35 @@ INDEX_HTML = r"""<!doctype html>
     let commandFeedbackTimer = 0;
     let latestCommandReady = false;
     let latestOutputReady = false;
-    let selectedStepperTarget = 3;
-    const outputActions = new Set([
+    let latestMicSeen = false;
+    let latestSystemEnabled = false;
+    let latestBubbleActive = false;
+    let latestRelayOutputEnabled = false;
+    let latestFogOn = false;
+    let latestFanOn = false;
+    const STEPPER_SINGLE_TARGET = 1;
+    const systemOutputActions = new Set([
       "light_auto",
-      "light_color",
-      "light_off",
       "relay_on",
       "relay_off",
+      "fan_on",
+      "fan_off",
       "stepper_forward",
       "stepper_backward",
-      "stepper_stop"
+      "stepper_stop",
+      "bubble_trigger"
     ]);
+    const bubbleLockedActions = new Set(["stepper_forward", "stepper_backward", "stepper_stop", "relay_on", "relay_off", "fan_on", "fan_off", "bubble_trigger"]);
     document.querySelectorAll("[id]").forEach((el) => ids[el.id] = el);
     document.querySelectorAll("button[data-action], #clearLog").forEach((button) => buttonLabels.set(button, button.textContent));
     const lightPresetButtons = Array.from(document.querySelectorAll(".mood-button"));
-    const stepperTargetButtons = Array.from(document.querySelectorAll("[data-stepper-target]"));
 
     const setText = (id, value) => { ids[id].textContent = value ?? "--"; };
     const realText = (seen, value, suffix = "") => seen && value !== undefined && value !== null ? `${value}${suffix}` : "--";
     const modeText = (seen, values, index) => seen ? (values[index] ?? `UNKNOWN ${index}`) : "--";
     const actionText = (seen, index) => seen ? `action ${controlActions[index] ?? `UNKNOWN ${index}`}` : "action --";
     const rgbwText = (values) => Array.isArray(values) ? values.join("/") : "--/--/--/--";
+    const onOffText = (seen, active, detail = "") => !seen ? "--" : `${active ? "开启" : "关闭"}${detail ? ` · ${detail}` : ""}`;
     const setBar = (id, seen, value, max = 100, invert = false) => {
       if (!seen) {
         ids[id].style.width = "0%";
@@ -670,10 +715,6 @@ INDEX_HTML = r"""<!doctype html>
         setText("lightMood", "手动");
       }
     };
-    const selectStepperTarget = (button) => {
-      selectedStepperTarget = Math.max(1, Math.min(3, Number(button?.dataset.stepperTarget || 3)));
-      stepperTargetButtons.forEach((item) => item.classList.toggle("is-selected", item === button));
-    };
     const stepperTurns = (trigger) => {
       const raw = Number(trigger?.dataset.turns || ids.stepperTurns.value || 1);
       return Math.max(0.1, Math.min(20, Number.isFinite(raw) ? raw : 1));
@@ -693,22 +734,50 @@ INDEX_HTML = r"""<!doctype html>
         ];
       }
       if (action === "stepper_forward" || action === "stepper_backward") {
-        return [stepperSteps(trigger), selectedStepperTarget, 0, 0];
+        return [stepperSteps(trigger), STEPPER_SINGLE_TARGET, 0, 0];
       }
       if (action === "stepper_stop") {
-        return [0, selectedStepperTarget, 0, 0];
+        return [0, STEPPER_SINGLE_TARGET, 0, 0];
       }
       return [0, 0, 0, 0];
     };
     const setCommandFeedback = (state, text, duration = 1600) => {
-      pill(ids.commandStatus, state, text);
+      if (ids.commandStatus) {
+        pill(ids.commandStatus, state, text);
+      }
       commandFeedbackUntil = Date.now() + duration;
       window.clearTimeout(commandFeedbackTimer);
       commandFeedbackTimer = window.setTimeout(() => setCommandReady(latestCommandReady), duration);
     };
     const canUseButton = (button) => {
       const action = button.dataset.action || "";
-      return latestCommandReady && (!outputActions.has(action) || latestOutputReady);
+      if (!latestCommandReady) return false;
+      if (action === "system_enable" || action === "system_disable") {
+        return true;
+      }
+      if (!latestMicSeen) return false;
+      if (action === "light_color" || action === "light_off") {
+        return latestSystemEnabled;
+      }
+      if (action === "relay_on") {
+        return latestSystemEnabled && latestRelayOutputEnabled && !latestBubbleActive && !latestFogOn;
+      }
+      if (action === "relay_off") {
+        return latestRelayOutputEnabled && !latestBubbleActive && latestFogOn;
+      }
+      if (action === "fan_on") {
+        return latestSystemEnabled && latestRelayOutputEnabled && !latestBubbleActive && !latestFanOn;
+      }
+      if (action === "fan_off") {
+        return latestRelayOutputEnabled && !latestBubbleActive && latestFanOn;
+      }
+      if (action === "bubble_trigger") {
+        return latestSystemEnabled && latestRelayOutputEnabled && !latestBubbleActive;
+      }
+      if (bubbleLockedActions.has(action) && latestBubbleActive) {
+        return false;
+      }
+      return !systemOutputActions.has(action) || latestSystemEnabled;
     };
     const setButtonPending = (button, pending) => {
       button.classList.toggle("is-pending", pending);
@@ -717,19 +786,24 @@ INDEX_HTML = r"""<!doctype html>
     };
     const setCommandReady = (enabled) => {
       latestCommandReady = enabled;
+      if (!ids.commandStatus) return;
       if (Date.now() < commandFeedbackUntil) return;
-      pill(ids.commandStatus, enabled ? "ok" : "warn", enabled ? "可发送" : "等待串口");
+      pill(ids.commandStatus, enabled ? "ok" : "warn", enabled ? "就绪" : "等待串口");
     };
-    const setControlAvailability = (commandReady, outputReady) => {
-      latestOutputReady = outputReady;
+    const setControlAvailability = (commandReady, micSeen, systemEnabled, bubbleActive, relayOutputEnabled = false, fogOn = false, fanOn = false) => {
+      latestOutputReady = Boolean(commandReady && micSeen && systemEnabled);
+      latestMicSeen = micSeen;
+      latestSystemEnabled = systemEnabled;
+      latestBubbleActive = bubbleActive;
+      latestRelayOutputEnabled = relayOutputEnabled;
+      latestFogOn = fogOn;
+      latestFanOn = fanOn;
       document.querySelectorAll("button[data-action]").forEach((button) => {
-        const action = button.dataset.action || "";
-        const needsSystemOn = outputActions.has(action);
         const pending = button.classList.contains("is-pending");
-        button.disabled = pending || !commandReady || (needsSystemOn && !outputReady);
+        latestCommandReady = commandReady;
+        button.disabled = pending || !canUseButton(button);
       });
-      stepperTargetButtons.forEach((button) => button.disabled = !outputReady);
-      ids.stepperTurns.disabled = !outputReady;
+      ids.stepperTurns.disabled = !commandReady || !micSeen || !systemEnabled || bubbleActive;
     };
     const renderLogs = (logs) => {
       if (suppressLogRender) return;
@@ -776,9 +850,6 @@ INDEX_HTML = r"""<!doctype html>
     document.querySelectorAll("button[data-action]").forEach((button) => {
       button.addEventListener("click", () => sendCommand(button));
     });
-    stepperTargetButtons.forEach((button) => {
-      button.addEventListener("click", () => selectStepperTarget(button));
-    });
     ids.clearLog.addEventListener("click", () => {
       suppressLogRender = true;
       ids.log.textContent = "";
@@ -796,6 +867,10 @@ INDEX_HTML = r"""<!doctype html>
       const serialReady = Boolean(state.bridge.sourceOpen && state.bridge.targetOpen);
       const commandReady = Boolean(state.bridge.targetOpen);
       const outputReady = Boolean(commandReady && micSeen && state.mic.systemEnabled);
+      const bubbleActive = Boolean(micSeen && state.mic.bubbleState > 0);
+      const fogOn = Boolean(micSeen && state.mic.relayState === 2);
+      const fanOn = Boolean(micSeen && state.mic.fanState === 2);
+      const relayOutputEnabled = Boolean(micSeen && state.mic.relayOutputEnabled);
       pill(ids.webStatus, "ok", "已连接");
       pill(ids.sourceStatus, serialReady ? "ok" : "warn", serialReady ? "串口在线" : "等待串口");
       pill(ids.m5Status, m5Seen ? "ok" : "warn", m5Seen ? "在线" : "等待");
@@ -803,7 +878,7 @@ INDEX_HTML = r"""<!doctype html>
       pill(ids.eegStatus, eegSeen ? (state.eeg.ageMs < 1200 ? "ok" : "warn") : "warn", eegSeen ? "真实数据" : "等待脑电");
       pill(ids.systemEnabled, micSeen ? (state.mic.systemEnabled ? "ok" : "bad") : "neutral", micSeen ? (state.mic.systemEnabled ? "系统已开启" : "系统关闭") : "--");
       setCommandReady(commandReady);
-      setControlAvailability(commandReady, outputReady);
+      setControlAvailability(commandReady, micSeen, Boolean(state.mic.systemEnabled), bubbleActive, relayOutputEnabled, fogOn, fanOn);
 
       setText("sourcePort", `${state.config.source}@${state.config.sourceBaud}`);
       setText("targetPort", `${state.config.target}@${state.config.targetBaud}`);
@@ -824,14 +899,27 @@ INDEX_HTML = r"""<!doctype html>
 
       setText("lightMode", modeText(micSeen, lightModes, state.mic.lightMode));
       setText("lightLevel", micSeen ? `level ${state.mic.lightLevel} L1 ${rgbwText(state.mic.light1Rgbw)} L2 ${rgbwText(state.mic.light2Rgbw)}` : "level --");
-      setText("relayState", modeText(micSeen, relayStates, state.mic.relayState));
+      setText("relayState", micSeen ? `雾 ${modeText(true, relayStates, state.mic.relayState)} / 风 ${modeText(true, relayStates, state.mic.fanState)}` : "--");
+      setText("lightCurrentState", onOffText(micSeen, state.mic.lightLevel > 0, modeText(micSeen, lightModes, state.mic.lightMode)));
+      setText("fogCurrentState", onOffText(micSeen, fogOn, modeText(micSeen, relayStates, state.mic.relayState)));
+      setText("fanCurrentState", onOffText(micSeen, fanOn, modeText(micSeen, relayStates, state.mic.fanState)));
       setText("stepperState", modeText(micSeen, stepperStates, state.mic.stepperState));
       setText("safetyState", modeText(micSeen, safetyStates, state.mic.safetyState));
       setText("lastAction", actionText(micSeen, state.mic.lastControlAction));
-      setText("relayEnabled", micSeen ? (state.mic.relayOutputEnabled ? "固件输出已启用" : "固件输出关闭") : "--");
+      setText("relayEnabled", micSeen ? (state.mic.relayOutputEnabled ? "雾机/风扇输出已启用" : "固件输出关闭") : "--");
       setText("stepperEnabled", micSeen ? (state.mic.stepperOutputEnabled ? "固件输出已启用" : "固件输出关闭") : "--");
-      pill(ids.relayHint, micSeen ? (!state.mic.systemEnabled ? "neutral" : (state.mic.relayOutputEnabled ? "ok" : "warn")) : "neutral", micSeen ? (!state.mic.systemEnabled ? "需系统开启" : (state.mic.relayOutputEnabled ? "可输出" : "输出关闭")) : "--");
-      pill(ids.stepperHint, micSeen ? (!state.mic.systemEnabled ? "neutral" : (state.mic.stepperOutputEnabled ? "ok" : "warn")) : "neutral", micSeen ? (!state.mic.systemEnabled ? "需系统开启" : (state.mic.stepperOutputEnabled ? "可输出" : "输出关闭")) : "--");
+      setText("pressureState", m5Seen ? (state.m5.pressurePressed ? "已按下" : "未按下") : "--");
+      setText("pressureLast", m5Seen && state.m5.pressureLastMs >= 0 ? `${Math.round(state.m5.pressureLastMs / 1000)} 秒` : "--");
+      setText("pressureCount", m5Seen ? `count ${state.m5.pressureTriggerCount}` : "count --");
+      pill(ids.pressureSource, m5Seen ? (state.m5.pressurePressed ? "warn" : "ok") : "neutral", m5Seen ? "M5 在线" : "M5 等待");
+      setText("bubbleState", modeText(micSeen, bubbleStates, state.mic.bubbleState));
+      setText("bubbleDetail", micSeen ? `count ${state.mic.bubbleTriggerCount} / ${Math.round(state.mic.bubbleActiveMs / 1000)} 秒` : "--");
+      pill(
+        ids.relayHint,
+        micSeen ? (!state.mic.systemEnabled ? "neutral" : (!relayOutputEnabled ? "warn" : (bubbleActive ? "warn" : ((fogOn || fanOn) ? "ok" : "neutral")))) : "neutral",
+        micSeen ? (!state.mic.systemEnabled ? "需系统开启" : (!relayOutputEnabled ? "输出未启用" : (bubbleActive ? "泡泡流程中" : ((fogOn || fanOn) ? "有输出" : "待机")))) : "--"
+      );
+      pill(ids.stepperHint, micSeen ? (!state.mic.systemEnabled ? "neutral" : (state.mic.stepperOutputEnabled ? "ok" : "warn")) : "neutral", micSeen ? (!state.mic.systemEnabled ? "需系统开启" : (bubbleActive ? "泡泡流程中" : (state.mic.stepperOutputEnabled ? "可输出" : "输出关闭"))) : "--");
 
       setText("sentFrames", realText(state.bridge.targetOpen, state.stats.sentFrames));
       setText("validPackets", realText(eegSeen, state.stats.validPackets));
@@ -844,9 +932,9 @@ INDEX_HTML = r"""<!doctype html>
         if (!commandReady) {
           ids.notice.textContent = "等待 M5Stack 串口打开。";
         } else if (!micSeen) {
-          ids.notice.textContent = "等待 Microduino 状态；系统开启命令仍可发送。";
+          ids.notice.textContent = "等待 Microduino 状态；可先使用系统开启命令。";
         } else if (!state.mic.systemEnabled) {
-          ids.notice.textContent = "系统关闭：先点击系统开启，灯光、继电器和步进电机才会执行。";
+          ids.notice.textContent = "系统关闭：灯光、泡泡、雾机、风扇和步进电机需先开启系统。";
         } else {
           ids.notice.textContent = "系统已开启：输出控制会通过 M5Stack 串口转发。";
         }
@@ -859,7 +947,7 @@ INDEX_HTML = r"""<!doctype html>
     events.onerror = () => {
       pill(ids.webStatus, "bad", "断开");
       setCommandReady(false);
-      setControlAvailability(false, false);
+      setControlAvailability(false, false, false, false);
       setNotice("前端与本地服务断开。");
     };
   </script>
@@ -903,6 +991,9 @@ class M5Status:
     mic_status: str = "NO"
     serial_age_ms: int = 0
     mic_age_ms: int = 0
+    pressure_pressed: int = 0
+    pressure_trigger_count: int = 0
+    pressure_last_ms: int = -1
     seen: bool = False
     last_update_time: float = 0.0
 
@@ -918,12 +1009,17 @@ class MicStatus:
     light2_rgbw: list[int] = field(default_factory=lambda: [0, 0, 0, 0])
     stepper_state: int = 0
     relay_state: int = 0
+    fan_state: int = 0
+    bubble_state: int = 0
+    bubble_trigger_count: int = 0
+    bubble_active_ms: int = 0
     safety_state: int = 2
     control_rx_count: int = 0
     last_control_action: int = 0
     manual_light_enabled: int = 0
     relay_output_enabled: int = 0
     stepper_output_enabled: int = 0
+    bubble_output_enabled: int = 0
     system_enabled: int = 0
     seen: bool = False
     last_update_time: float = 0.0
@@ -1223,6 +1319,10 @@ class DreamBridge:
                 self.m5_status.mic_status = pairs.get("MIC_STATUS", "NO")
                 self.m5_status.serial_age_ms = int_value(pairs, "SERIAL_AGE_MS")
                 self.m5_status.mic_age_ms = int_value(pairs, "MIC_AGE_MS")
+                self.m5_status.pressure_pressed = int_value(pairs, "PRESSURE")
+                pressure_last_ms = int_value(pairs, "PRESSURE_LAST_MS", -1)
+                self.m5_status.pressure_last_ms = -1 if pressure_last_ms >= 0x7FFFFFFF else pressure_last_ms
+                self.m5_status.pressure_trigger_count = int_value(pairs, "PRESSURE_TRIGGER_COUNT")
                 mic_fresh = self.m5_status.mic_status == "YES" and self.m5_status.mic_age_ms < MIC_STATUS_STALE_MS
                 if mic_fresh:
                     self.mic_status.seen = True
@@ -1246,12 +1346,17 @@ class DreamBridge:
                     ]
                     self.mic_status.stepper_state = int_value(pairs, "MIC_STEPPER")
                     self.mic_status.relay_state = int_value(pairs, "MIC_RELAY")
+                    self.mic_status.fan_state = int_value(pairs, "MIC_FAN")
+                    self.mic_status.bubble_state = int_value(pairs, "MIC_BUBBLE")
+                    self.mic_status.bubble_trigger_count = int_value(pairs, "MIC_BUBBLE_COUNT")
+                    self.mic_status.bubble_active_ms = int_value(pairs, "MIC_BUBBLE_ACTIVE_MS")
                     self.mic_status.safety_state = int_value(pairs, "MIC_SAFETY", 2)
                     self.mic_status.control_rx_count = int_value(pairs, "MIC_CONTROL_RX")
                     self.mic_status.last_control_action = int_value(pairs, "MIC_LAST_ACTION")
                     self.mic_status.manual_light_enabled = int_value(pairs, "MIC_MANUAL_LIGHT")
                     self.mic_status.relay_output_enabled = int_value(pairs, "MIC_RELAY_ENABLED")
                     self.mic_status.stepper_output_enabled = int_value(pairs, "MIC_STEPPER_ENABLED")
+                    self.mic_status.bubble_output_enabled = int_value(pairs, "MIC_BUBBLE_ENABLED")
                     self.mic_status.system_enabled = int_value(pairs, "MIC_SYSTEM_ENABLED")
                 else:
                     self.mic_status.seen = False
@@ -1339,6 +1444,9 @@ class DreamBridge:
                     "micStatus": self.m5_status.mic_status,
                     "serialAgeMs": self.m5_status.serial_age_ms,
                     "micAgeMs": self.m5_status.mic_age_ms,
+                    "pressurePressed": bool(self.m5_status.pressure_pressed),
+                    "pressureTriggerCount": self.m5_status.pressure_trigger_count,
+                    "pressureLastMs": self.m5_status.pressure_last_ms,
                 },
                 "mic": {
                     "seen": self.mic_status.seen,
@@ -1352,12 +1460,17 @@ class DreamBridge:
                     "light2Rgbw": list(self.mic_status.light2_rgbw),
                     "stepperState": self.mic_status.stepper_state,
                     "relayState": self.mic_status.relay_state,
+                    "fanState": self.mic_status.fan_state,
+                    "bubbleState": self.mic_status.bubble_state,
+                    "bubbleTriggerCount": self.mic_status.bubble_trigger_count,
+                    "bubbleActiveMs": self.mic_status.bubble_active_ms,
                     "safetyState": self.mic_status.safety_state,
                     "controlRxCount": self.mic_status.control_rx_count,
                     "lastControlAction": self.mic_status.last_control_action,
                     "manualLightEnabled": self.mic_status.manual_light_enabled,
                     "relayOutputEnabled": self.mic_status.relay_output_enabled,
                     "stepperOutputEnabled": self.mic_status.stepper_output_enabled,
+                    "bubbleOutputEnabled": self.mic_status.bubble_output_enabled,
                     "systemEnabled": self.mic_status.system_enabled,
                 },
             }

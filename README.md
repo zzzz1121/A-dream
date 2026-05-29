@@ -4,7 +4,7 @@
 
 Dream 的目标是把体验者的脑电状态转化为现场光影和机械反馈。当前原型链路为：脑电设备通过蓝牙把 ThinkGear 数据发给电脑，电脑端 Python 程序解析后通过 USB 串口发给 M5Stack，M5Stack 作为“网关 + 监测屏”通过 ESP-NOW 转发给 Microduino，Microduino 负责 DMX 灯光、步进电机、继电器和本地安全状态机。
 
-当前版本已经具备电脑端脑电桥接、浏览器实时前端、M5Stack 网关监测、M5Stack 到 Microduino 的 ESP-NOW 转发、Microduino DMX 双灯控制、左右步进电机台架输出、Microduino 状态回传与安全总开关。浏览器前端只显示真实串口、M5Stack 和 Microduino 回传状态；没有收到真实数据时显示 `--` / 等待，不使用假数据。继电器物理输出仍默认关闭；步进电机物理输出当前已启用用于台架调试，正式负载接入前仍必须确认电源、驱动器、限位、行程和急停。
+当前版本已经具备电脑端脑电桥接、浏览器实时前端、M5Stack 网关监测、M5Stack 到 Microduino 的 ESP-NOW 转发、Microduino DMX 双灯控制、单步进驱动板台架输出、Microduino 状态回传与安全总开关。浏览器前端只显示真实串口、M5Stack 和 Microduino 回传状态；没有收到真实数据时显示 `--` / 等待，不使用假数据。继电器物理输出仍默认关闭；步进电机物理输出当前已启用用于台架调试，正式负载接入前仍必须确认电源、驱动器、限位、行程和急停。
 
 ## 当前链路
 
@@ -35,7 +35,7 @@ Microduino --> DMX 灯光 / 步进电机 / 继电器
 - Microduino 双 DMX RGBW 灯控制：DMX TX 使用 `GPIO5`，灯具地址为 `001` 和 `005`。
 - 两灯流水光效：灯 1 使用当前色轮相位，灯 2 固定错开 `96 / 256` 圈，约 `3.36s` 相位差。
 - 前端真实状态监测、系统开启 / 关闭、灯光颜色、继电器、步进电机控制入口。
-- 前端步进电机支持目标选择：左、右、左右；固件通过 `arg2` 传递目标掩码。
+- 前端步进电机固定控制单驱动板 `GPIO25/GPIO14`，不再显示左 / 右 / 左右目标选择。
 - 前端所有控制按钮都有反馈：发送中、已发送、失败；M5Stack 串口未打开时不会假装发送成功。
 - M5Stack A/B/C 按键控制系统开启、全部停止、系统关闭。
 - Dream 完整技术设计、无线专项方案、命名规范和使用说明文档。
@@ -101,7 +101,7 @@ Microduino --> DMX 灯光 / 步进电机 / 继电器
 
 | 板卡 | PlatformIO 环境 | 当前用途 | 固件入口 |
 | --- | --- | --- | --- |
-| Microduino Core ESP32 | `microduino-core-esp32` | 执行控制器，接收 ESP-NOW EEG / CMD，控制双 DMX 灯、左右步进电机并管理安全状态 | `src/microduino_core_esp32_test/main.cpp` |
+| Microduino Core ESP32 | `microduino-core-esp32` | 执行控制器，接收 ESP-NOW EEG / CMD，控制双 DMX 灯、单步进驱动板并管理安全状态 | `src/microduino_core_esp32_test/main.cpp` |
 | M5Stack Core ESP32 | `m5stack-core-esp32` | 电脑 USB 串口网关 + 监测屏，通过 ESP-NOW 转发 EEG / CMD | `src/m5stack_core_esp32_test/main.cpp` |
 | Microduino DMX 测试 | `microduino-core-esp32-dmx-spotlight-test` | 单项测试两盏 RGBW DMX 灯流水状态 | `src/microduino_core_esp32_dmx_spotlight_test/main.cpp` |
 | Microduino 步进引脚诊断 | `microduino-core-esp32-stepper-pin-diagnostic` | 单项诊断左右步进 STEP / DIR 输出 | `src/microduino_core_esp32_stepper_pin_diagnostic/main.cpp` |
@@ -169,7 +169,7 @@ python tools\dream_eeg_serial_bridge.py --source COM10 --target COM6 --source-ba
 http://127.0.0.1:8765/
 ```
 
-前端可以查看真实实时数据，并发送系统开启、系统关闭、灯光颜色、继电器、步进电机和全部停止指令。步进电机控制区可选择 `左右`、`左`、`右`，再发送正向、反向或停止命令。没有收到真实 EEG / M5Stack / Microduino 状态时，界面显示 `--` 或等待；所有控制按钮都有发送中、已发送、失败反馈。若 M5Stack 串口未打开，控制请求会返回失败。
+前端可以查看真实实时数据，并发送系统开启、系统关闭、灯光颜色、继电器、步进电机和全部停止指令。步进电机控制区固定控制单驱动板，可发送正向、反向或停止命令。没有收到真实 EEG / M5Stack / Microduino 状态时，界面显示 `--` 或等待；所有控制按钮都有发送中、已发送、失败反馈。若 M5Stack 串口未打开，控制请求会返回失败。
 
 ## 数据格式
 

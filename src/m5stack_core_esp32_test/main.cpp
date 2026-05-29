@@ -18,6 +18,9 @@
 #define CONTROL_SEND_REPEAT_DELAY_MS 20
 #define DREAM_PACKET_MAGIC 0x44524541UL
 #define DREAM_PROTOCOL_VERSION 1
+#define PRESSURE_SENSOR_PIN -1
+#define PRESSURE_SENSOR_ACTIVE_LEVEL HIGH
+#define PRESSURE_SENSOR_DEBOUNCE_MS 50
 
 const uint8_t BROADCAST_MAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -59,6 +62,13 @@ enum DreamRelayState : uint8_t {
   RELAY_FAULT,
 };
 
+enum DreamBubbleState : uint8_t {
+  BUBBLE_IDLE,
+  BUBBLE_FOGGING,
+  BUBBLE_BLOWING,
+  BUBBLE_FINISHING,
+};
+
 enum DreamSafetyState : uint8_t {
   SAFETY_NORMAL,
   SAFETY_SIGNAL_BAD,
@@ -80,6 +90,9 @@ enum DreamControlAction : uint8_t {
   CONTROL_STEPPER_BACKWARD,
   CONTROL_STEPPER_STOP,
   CONTROL_ALL_STOP,
+  CONTROL_FAN_ON,
+  CONTROL_FAN_OFF,
+  CONTROL_BUBBLE_TRIGGER,
 };
 
 struct __attribute__((packed)) DreamEegEspNowPacket {
@@ -132,6 +145,12 @@ struct __attribute__((packed)) DreamMicStatusPacket {
   uint8_t relayOutputEnabled;
   uint8_t stepperOutputEnabled;
   uint8_t systemEnabled;
+  uint8_t fanState;
+  uint8_t bubbleState;
+  uint8_t bubbleOutputEnabled;
+  uint8_t reserved2;
+  uint32_t bubbleTriggerCount;
+  uint32_t bubbleActiveMs;
   uint16_t checksum;
 };
 
@@ -173,6 +192,12 @@ uint32_t lastStatusPrintMs = 0;
 bool espNowReady = false;
 bool haveEeg = false;
 bool haveMicStatus = false;
+bool pressurePressed = false;
+bool pressureStablePressed = false;
+bool pressureLastRawPressed = false;
+uint32_t pressureLastChangeMs = 0;
+uint32_t pressureLastTriggerMs = 0;
+uint32_t pressureTriggerCount = 0;
 esp_now_send_status_t lastSendStatus = ESP_NOW_SEND_FAIL;
 
 uint16_t packetChecksum(const uint8_t *data, size_t length) {
@@ -219,6 +244,16 @@ const char *relayStateName(uint8_t value) {
     case RELAY_ON: return "ON";
     case RELAY_COOLDOWN: return "COOL";
     case RELAY_FAULT: return "FAULT";
+    default: return "?";
+  }
+}
+
+const char *bubbleStateName(uint8_t value) {
+  switch (value) {
+    case BUBBLE_IDLE: return "IDLE";
+    case BUBBLE_FOGGING: return "FOG";
+    case BUBBLE_BLOWING: return "BLOW";
+    case BUBBLE_FINISHING: return "TAIL";
     default: return "?";
   }
 }
@@ -334,6 +369,15 @@ uint8_t controlActionFromName(const char *actionName) {
   }
   if (strcmp(actionName, "ALL_STOP") == 0) {
     return CONTROL_ALL_STOP;
+  }
+  if (strcmp(actionName, "FAN_ON") == 0) {
+    return CONTROL_FAN_ON;
+  }
+  if (strcmp(actionName, "FAN_OFF") == 0) {
+    return CONTROL_FAN_OFF;
+  }
+  if (strcmp(actionName, "BUBBLE_TRIGGER") == 0) {
+    return CONTROL_BUBBLE_TRIGGER;
   }
   return CONTROL_NONE;
 }
@@ -500,6 +544,72 @@ void sendLocalControl(uint8_t action, uint16_t arg1 = 0, uint16_t arg2 = 0, uint
   packet.checksum = calculatePacketChecksum(packet);
   controlRxCount++;
   sendControlToMicroduino(packet);
+}
+
+bool readPressureSensorRaw() {
+#if PRESSURE_SENSOR_PIN >= 0
+  return digitalRead(PRESSURE_SENSOR_PIN) == PRESSURE_SENSOR_ACTIVE_LEVEL;
+#else
+  return false;
+#endif
+}
+
+void initPressureSensor() {
+#if PRESSURE_SENSOR_PIN >= 0
+  pinMode(PRESSURE_SENSOR_PIN, INPUT);
+  pressureLastRawPressed = readPressureSensorRaw();
+  pressureStablePressed = pressureLastRawPressed;
+  pressurePressed = pressureStablePressed;
+  Serial.print("EVENT=PRESSURE_SENSOR_READY PIN=");
+  Serial.print(PRESSURE_SENSOR_PIN);
+  Serial.print(" ACTIVE_LEVEL=");
+  Serial.println(PRESSURE_SENSOR_ACTIVE_LEVEL == HIGH ? "HIGH" : "LOW");
+#else
+  pressurePressed = false;
+  pressureStablePressed = false;
+  pressureLastRawPressed = false;
+  Serial.println("EVENT=PRESSURE_SENSOR_READY PIN=UNCONFIGURED");
+#endif
+  pressureLastChangeMs = millis();
+}
+
+void handlePressureSensor() {
+  const uint32_t now = millis();
+  const bool rawPressed = readPressureSensorRaw();
+  if (rawPressed != pressureLastRawPressed) {
+    pressureLastRawPressed = rawPressed;
+    pressureLastChangeMs = now;
+  }
+
+  if (now - pressureLastChangeMs < PRESSURE_SENSOR_DEBOUNCE_MS) {
+    pressurePressed = pressureStablePressed;
+    return;
+  }
+
+  if (rawPressed == pressureStablePressed) {
+    pressurePressed = pressureStablePressed;
+    return;
+  }
+
+  pressureStablePressed = rawPressed;
+  pressurePressed = pressureStablePressed;
+  if (!pressureStablePressed) {
+    return;
+  }
+
+  const uint32_t micAgeMs = haveMicStatus ? now - lastMicStatusMs : 0xFFFFFFFFUL;
+  const bool bubbleBusy = haveMicStatus &&
+                          micAgeMs < MIC_STATUS_TIMEOUT_MS &&
+                          latestMicStatus.bubbleState != BUBBLE_IDLE;
+  if (bubbleBusy) {
+    Serial.println("EVENT=PRESSURE_TRIGGER_IGNORED REASON=BUBBLE_BUSY");
+    return;
+  }
+
+  pressureTriggerCount++;
+  pressureLastTriggerMs = now;
+  sendLocalControl(CONTROL_BUBBLE_TRIGGER);
+  Serial.println("EVENT=PRESSURE_TRIGGER ACTION=BUBBLE_TRIGGER");
 }
 
 void handleButtons() {
@@ -761,14 +871,21 @@ void drawDashboardContent(Canvas &canvas, int16_t yShift) {
   canvas.fillRect(0, 220 + yShift, 320, 14, 0x0000);
   canvas.setCursor(8, 222 + yShift);
   if (micStatusFresh) {
-    canvas.printf("Relay:%s  Safety:%s",
+    canvas.printf("Fog:%s Fan:%s Bubble:%s",
                   relayStateName(latestMicStatus.relayState),
-                  safetyStateName(latestMicStatus.safetyState));
+                  relayStateName(latestMicStatus.fanState),
+                  bubbleStateName(latestMicStatus.bubbleState));
   } else {
-    canvas.print("Relay:WAIT  Safety:WAIT");
+    canvas.print("Fog:WAIT Fan:WAIT Bubble:WAIT");
   }
 
-  canvas.setCursor(212, 222 + yShift);
+  canvas.fillRect(0, 232 + yShift, 320, 8, 0x0000);
+  canvas.setCursor(8, 232 + yShift);
+  canvas.setTextColor(pressurePressed ? 0xFFE0 : 0xFFFF, 0x0000);
+  const uint32_t pressureAgeMs = pressureLastTriggerMs == 0 ? 0 : now - pressureLastTriggerMs;
+  canvas.printf("Press:%s last:%lums", pressurePressed ? "DOWN" : "UP", static_cast<unsigned long>(pressureAgeMs));
+
+  canvas.setCursor(212, 232 + yShift);
   canvas.setTextColor(micStatusFresh && latestMicStatus.systemEnabled ? 0x07E0 : 0xF800, 0x0000);
   canvas.printf("SYS:%s", micStatusFresh && latestMicStatus.systemEnabled ? "ON" : "OFF");
 }
@@ -781,6 +898,7 @@ void printStatus() {
   const uint32_t now = millis();
   const uint32_t micAgeMs = haveMicStatus ? now - lastMicStatusMs : 0;
   const bool micStatusFresh = haveMicStatus && micAgeMs < MIC_STATUS_TIMEOUT_MS;
+  const uint32_t pressureLastMs = pressureLastTriggerMs == 0 ? 0xFFFFFFFFUL : now - pressureLastTriggerMs;
   Serial.print("EVENT=M5_STATUS SERIAL_FRAMES=");
   Serial.print(serialFrameCount);
   Serial.print(" SERIAL_ERRORS=");
@@ -839,6 +957,14 @@ void printStatus() {
   Serial.print(latestMicStatus.stepperState);
   Serial.print(" MIC_RELAY=");
   Serial.print(latestMicStatus.relayState);
+  Serial.print(" MIC_FAN=");
+  Serial.print(latestMicStatus.fanState);
+  Serial.print(" MIC_BUBBLE=");
+  Serial.print(latestMicStatus.bubbleState);
+  Serial.print(" MIC_BUBBLE_COUNT=");
+  Serial.print(latestMicStatus.bubbleTriggerCount);
+  Serial.print(" MIC_BUBBLE_ACTIVE_MS=");
+  Serial.print(latestMicStatus.bubbleActiveMs);
   Serial.print(" MIC_SAFETY=");
   Serial.print(latestMicStatus.safetyState);
   Serial.print(" MIC_CONTROL_RX=");
@@ -851,8 +977,16 @@ void printStatus() {
   Serial.print(latestMicStatus.relayOutputEnabled);
   Serial.print(" MIC_STEPPER_ENABLED=");
   Serial.print(latestMicStatus.stepperOutputEnabled);
+  Serial.print(" MIC_BUBBLE_ENABLED=");
+  Serial.print(latestMicStatus.bubbleOutputEnabled);
   Serial.print(" MIC_SYSTEM_ENABLED=");
-  Serial.println(latestMicStatus.systemEnabled);
+  Serial.print(latestMicStatus.systemEnabled);
+  Serial.print(" PRESSURE=");
+  Serial.print(pressurePressed ? 1 : 0);
+  Serial.print(" PRESSURE_TRIGGER_COUNT=");
+  Serial.print(pressureTriggerCount);
+  Serial.print(" PRESSURE_LAST_MS=");
+  Serial.println(pressureLastMs);
 }
 
 void setup() {
@@ -871,6 +1005,7 @@ void setup() {
   Serial.println(DEVICE_ROLE);
   Serial.println("EVENT=SERIAL_READY INPUT=EEG_CSV TARGET=M5STACK");
 
+  initPressureSensor();
   initEspNow();
   drawDashboard();
 }
@@ -878,6 +1013,7 @@ void setup() {
 void loop() {
   M5.update();
   handleButtons();
+  handlePressureSensor();
   handleSerialInput();
 
   const uint32_t now = millis();

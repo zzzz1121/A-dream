@@ -143,7 +143,7 @@ MIC:WAIT
 | --- | --- |
 | 灯光 | DMX 接线、灯具地址、MAX485、电源 |
 | 继电器 / 雾机 | `DREAM_ENABLE_RELAY_OUTPUT` 是否为 `1` |
-| 步进电机 | `DREAM_ENABLE_STEPPER_OUTPUT` 是否为 `1`，目标是否选对左 / 右 / 左右 |
+| 步进电机 | `DREAM_ENABLE_STEPPER_OUTPUT` 是否为 `1`，单驱动板 STEP / DIR 是否接对 |
 
 当前继电器默认物理输出关闭。步进电机物理输出已经启用用于台架调试；如果接了真实机械负载，先确认驱动器、电流、方向、限位、行程和急停。
 
@@ -218,12 +218,12 @@ src/microduino_core_esp32_dmx_spotlight_test/main.cpp
 - 驱动器 EN 是否需要接线。
 - 驱动器细分和电流限流是否正确。
 - Microduino GND 是否与驱动器控制地相连。
-- 前端目标是否选择了正确的 `左`、`右` 或 `左右`。
+- 前端是否已发送正转、反转或停止命令。
 - `arg2` 目标掩码是否为 `1`、`2` 或 `3`。
 
 注意：
 
-当前 DMX 使用 `GPIO5`，左电机 STEP/DIR 为 `GPIO27/GPIO26`，右电机 STEP/DIR 为 `GPIO25/GPIO14`。接入真实机械负载前仍需要确认限位、方向、行程和硬件急停。
+当前 DMX 使用 `GPIO5`，单步进驱动板 STEP/DIR 为 `GPIO25/GPIO14`。接入真实机械负载前仍需要确认限位、方向、行程和硬件急停。
 
 ## 13. 系统运行一段时间后自动关闭
 

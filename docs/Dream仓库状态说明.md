@@ -4,7 +4,7 @@
 
 ## 当前定位
 
-`Dream` 是同名装置的 ESP32 固件、电脑端桥接程序、浏览器前端和技术文档仓库。当前阶段是可联调原型：脑电数据从电脑进入 M5Stack，再通过 ESP-NOW 转发给 Microduino，由 Microduino 负责双 DMX 灯光、左右步进电机台架输出、继电器状态机和本地安全状态。
+`Dream` 是同名装置的 ESP32 固件、电脑端桥接程序、浏览器前端和技术文档仓库。当前阶段是可联调原型：脑电数据从电脑进入 M5Stack，再通过 ESP-NOW 转发给 Microduino，由 Microduino 负责双 DMX 灯光、单步进驱动板台架输出、继电器状态机和本地安全状态。
 
 项目需求基线为 `docs/Dream需求规划文档_V3.0.docx`。当前实现保留需求中的核心方向：
 
@@ -40,8 +40,8 @@ Microduino --> DMX 灯光 / 步进电机 / 继电器
 - Microduino ESP-NOW 接收、DMX 灯光控制、安全总开关和状态回传。
 - Microduino DMX 使用 `GPIO5` 输出，两盏灯起始地址为 `001` 和 `005`。
 - 双灯流水光效已启用：灯 2 相对灯 1 错开 `96 / 256` 圈，形成前后流动感。
-- 左右步进电机输出已启用于台架调试：左 STEP/DIR 为 `GPIO27/GPIO26`，右 STEP/DIR 为 `GPIO25/GPIO14`。
-- 前端步进电机控制支持 `左右`、`左`、`右` 三种目标。
+- 单步进驱动板输出已启用于台架调试：STEP 为 `GPIO25`，DIR 为 `GPIO14`。
+- 前端步进电机控制固定为单驱动板目标，不再显示 `左右`、`左`、`右` 选择。
 - 前端真实状态监测：没有真实 EEG / M5 / MIC 回传时显示 `--` 或等待。
 - 前端控制按钮反馈：发送中、已发送、失败。
 - M5Stack A/B/C 按键控制系统开启、全部停止、系统关闭。
@@ -95,7 +95,7 @@ Microduino --> DMX 灯光 / 步进电机 / 继电器
 
 | 板子 | 环境名 | 当前用途 | 固件入口 |
 | --- | --- | --- | --- |
-| Microduino Core ESP32 | `microduino-core-esp32` | 执行控制器，接收 ESP-NOW EEG / CMD，控制双 DMX 灯、左右步进电机并管理安全状态 | `src/microduino_core_esp32_test/main.cpp` |
+| Microduino Core ESP32 | `microduino-core-esp32` | 执行控制器，接收 ESP-NOW EEG / CMD，控制双 DMX 灯、单步进驱动板并管理安全状态 | `src/microduino_core_esp32_test/main.cpp` |
 | M5Stack Core ESP32 | `m5stack-core-esp32` | 电脑 USB 串口网关 + 监测屏，通过 ESP-NOW 转发 EEG / CMD | `src/m5stack_core_esp32_test/main.cpp` |
 | Microduino DMX 测试 | `microduino-core-esp32-dmx-spotlight-test` | 单项测试两盏 RGBW DMX 灯流水状态 | `src/microduino_core_esp32_dmx_spotlight_test/main.cpp` |
 | Microduino 步进引脚诊断 | `microduino-core-esp32-stepper-pin-diagnostic` | 单项诊断左右步进 STEP / DIR 输出 | `src/microduino_core_esp32_stepper_pin_diagnostic/main.cpp` |

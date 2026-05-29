@@ -7,7 +7,7 @@
 
 #define BOARD_NAME "Microduino Core ESP32"
 #define DEVICE_ROLE "micController"
-#define MIC_CONTROLLER_VERSION "0.1.0"
+#define MIC_CONTROLLER_VERSION "0.1.3"
 
 #define SERIAL_BAUD 115200
 #define ESPNOW_CHANNEL 1
@@ -27,22 +27,26 @@
 #define DMX_LIGHT_1_ADDRESS 1
 #define DMX_LIGHT_2_ADDRESS 5
 #define DREAM_DMX_BOOT_SELF_TEST 1
-#define LIGHT_FLOW_STEP_MS 35
+#define LIGHT_FLOW_STEP_MS 90
 #define LIGHT_FLOW_OFFSET 96
+#define LIGHT_SMOOTH_TARGET_PERCENT 6
 
-// Stepper output is enabled for bench tuning. Keep relay output disabled until safety hardware is confirmed.
+// Keep EEG automatic linkage scoped to lights. Stepper remains available for manual bench tuning only.
+#define DREAM_ENABLE_EEG_STEPPER_AUTO 0
+#define DREAM_ENABLE_EEG_RELAY_AUTO 0
+
+// Stepper output is enabled for bench tuning. Relay outputs drive the fogger and fan boards.
 #define DREAM_ENABLE_STEPPER_OUTPUT 1
-#define DREAM_ENABLE_RELAY_OUTPUT 0
+#define DREAM_ENABLE_RELAY_OUTPUT 1
 
 #if DREAM_ENABLE_STEPPER_OUTPUT
-#define STEPPER_LEFT_STEP_PIN 27
-#define STEPPER_LEFT_DIR_PIN 26
-#define STEPPER_RIGHT_STEP_PIN 25
-#define STEPPER_RIGHT_DIR_PIN 14
-#define STEPPER_RIGHT_DIR_INVERT 0
+#define STEPPER_STEP_PIN 25
+#define STEPPER_DIR_PIN 14
+#define STEPPER_DIR_INVERT 0
 #define STEPPER_TARGET_LEFT 0x01
 #define STEPPER_TARGET_RIGHT 0x02
 #define STEPPER_TARGET_BOTH (STEPPER_TARGET_LEFT | STEPPER_TARGET_RIGHT)
+#define STEPPER_TARGET_SINGLE STEPPER_TARGET_LEFT
 #define STEPPER_ENABLE_PIN -1
 #define STEPPER_ENABLE_ACTIVE_LEVEL LOW
 #define STEPPER_STEPS_PER_REV 1600
@@ -55,15 +59,18 @@
 #endif
 
 #if DREAM_ENABLE_RELAY_OUTPUT
-#define RELAY_OUTPUT_PIN 33
+#define FOG_RELAY_PIN 26
+#define FAN_RELAY_PIN 27
 #define RELAY_ACTIVE_LEVEL HIGH
-#define RELAY_ARM_MS 3000
-#define RELAY_ON_MS 2000
-#define RELAY_MANUAL_MAX_ON_MS 5000
-#define RELAY_COOLDOWN_MS 10000
+#define BUBBLE_FOG_LEAD_MS 1000
+#define BUBBLE_BLOW_MS 4000
+#define BUBBLE_FAN_TAIL_MS 1000
 #endif
 
+#define BUBBLE_STEPPER_STEPS 1600
+
 const uint8_t BROADCAST_MAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+const uint8_t EEG_NOT_WORN_SIGNALS[] = {0x1D, 0x36, 0x37, 0x38, 0x50, 0x51, 0x52, 0x6B, 0xC8};
 
 enum DreamPacketType : uint8_t {
   DREAM_PACKET_EEG = 1,
@@ -103,6 +110,13 @@ enum DreamRelayState : uint8_t {
   RELAY_FAULT,
 };
 
+enum DreamBubbleState : uint8_t {
+  BUBBLE_IDLE,
+  BUBBLE_FOGGING,
+  BUBBLE_BLOWING,
+  BUBBLE_FINISHING,
+};
+
 enum DreamSafetyState : uint8_t {
   SAFETY_NORMAL,
   SAFETY_SIGNAL_BAD,
@@ -124,6 +138,9 @@ enum DreamControlAction : uint8_t {
   CONTROL_STEPPER_BACKWARD,
   CONTROL_STEPPER_STOP,
   CONTROL_ALL_STOP,
+  CONTROL_FAN_ON,
+  CONTROL_FAN_OFF,
+  CONTROL_BUBBLE_TRIGGER,
 };
 
 struct __attribute__((packed)) DreamEegEspNowPacket {
@@ -176,6 +193,12 @@ struct __attribute__((packed)) DreamMicStatusPacket {
   uint8_t relayOutputEnabled;
   uint8_t stepperOutputEnabled;
   uint8_t systemEnabled;
+  uint8_t fanState;
+  uint8_t bubbleState;
+  uint8_t bubbleOutputEnabled;
+  uint8_t reserved2;
+  uint32_t bubbleTriggerCount;
+  uint32_t bubbleActiveMs;
   uint16_t checksum;
 };
 
@@ -210,6 +233,8 @@ RgbwColor light1Current = {};
 RgbwColor light2Current = {};
 RgbwColor light1Target = {};
 RgbwColor light2Target = {};
+const RgbwColor BLUE_PURPLE_FLOW_BASE = {0x4B, 0x7D, 0xFF, 0};
+const RgbwColor BLUE_PURPLE_FLOW_BLUE = {0x24, 0x5C, 0xFF, 0};
 
 uint32_t eegRxCount = 0;
 uint32_t eegDropCount = 0;
@@ -231,6 +256,8 @@ uint8_t lightMode = LIGHT_OFF;
 uint8_t lightLevel = 0;
 uint8_t stepperState = STEPPER_DISABLED;
 uint8_t relayState = RELAY_OFF;
+uint8_t fanState = RELAY_OFF;
+uint8_t bubbleState = BUBBLE_IDLE;
 uint8_t safetyState = SAFETY_LINK_TIMEOUT;
 uint8_t lastControlAction = CONTROL_NONE;
 uint8_t lastAppliedControlActionForDedup = CONTROL_NONE;
@@ -242,25 +269,25 @@ bool haveAppliedControlPacket = false;
 bool timeoutWasActive = false;
 bool systemEnabled = false;
 bool manualLightEnabled = false;
+bool autoLightReleased = false;
 RgbwColor manualLightColor = {};
+uint32_t bubbleStateStartMs = 0;
+uint32_t bubbleStartMs = 0;
+uint32_t bubbleTriggerCount = 0;
+bool bubbleStepperStarted = false;
 
 #if DREAM_ENABLE_RELAY_OUTPUT
-uint32_t relayStateStartMs = 0;
-uint32_t relayArmStartMs = 0;
-bool manualRelayRequested = false;
+bool manualFogRequested = false;
+bool manualFanRequested = false;
 #endif
 
 #if DREAM_ENABLE_STEPPER_OUTPUT
-int32_t stepperLeftPositionSteps = 0;
-int32_t stepperRightPositionSteps = 0;
-int32_t stepperLeftTargetSteps = 0;
-int32_t stepperRightTargetSteps = 0;
-int32_t manualStepperLeftTargetSteps = 0;
-int32_t manualStepperRightTargetSteps = 0;
-uint32_t lastLeftStepperPulseUs = 0;
-uint32_t lastRightStepperPulseUs = 0;
-bool leftStepperPulseActive = false;
-bool rightStepperPulseActive = false;
+int32_t stepperPositionSteps = 0;
+int32_t stepperTargetSteps = 0;
+int32_t manualStepperTargetSteps = 0;
+int32_t bubbleStepperTargetSteps = 0;
+uint32_t lastStepperPulseUs = 0;
+bool stepperPulseActive = false;
 bool stepperBreathForward = true;
 bool manualStepperActive = false;
 uint8_t manualStepperMask = 0;
@@ -288,7 +315,9 @@ uint8_t max4(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
 }
 
 uint8_t smoothChannel(uint8_t current, uint8_t target) {
-  return static_cast<uint8_t>((static_cast<uint16_t>(current) * 85 + static_cast<uint16_t>(target) * 15 + 50) / 100);
+  return static_cast<uint8_t>(
+    (static_cast<uint16_t>(current) * (100 - LIGHT_SMOOTH_TARGET_PERCENT) +
+     static_cast<uint16_t>(target) * LIGHT_SMOOTH_TARGET_PERCENT + 50) / 100);
 }
 
 RgbwColor smoothColor(const RgbwColor &current, const RgbwColor &target) {
@@ -302,6 +331,20 @@ RgbwColor smoothColor(const RgbwColor &current, const RgbwColor &target) {
 
 bool isColorOff(const RgbwColor &color) {
   return color.r == 0 && color.g == 0 && color.b == 0 && color.w == 0;
+}
+
+bool isEegSignalBad(uint8_t poorSignal) {
+  if (poorSignal > POOR_SIGNAL_BAD_THRESHOLD) {
+    return true;
+  }
+
+  for (uint8_t i = 0; i < sizeof(EEG_NOT_WORN_SIGNALS); i++) {
+    if (poorSignal == EEG_NOT_WORN_SIGNALS[i]) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 RgbwColor scaleRgbColor(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness) {
@@ -356,6 +399,22 @@ RgbwColor scaleColor(const RgbwColor &color, uint8_t brightness) {
     static_cast<uint8_t>(static_cast<uint16_t>(color.b) * brightness / 255),
     static_cast<uint8_t>(static_cast<uint16_t>(color.w) * brightness / 255),
   };
+}
+
+bool isBluePurpleFlowPreset(const RgbwColor &color) {
+  return color.r == BLUE_PURPLE_FLOW_BASE.r &&
+         color.g == BLUE_PURPLE_FLOW_BASE.g &&
+         color.b == BLUE_PURPLE_FLOW_BASE.b &&
+         color.w == BLUE_PURPLE_FLOW_BASE.w;
+}
+
+void setBluePurpleFlowTargets(uint8_t brightness) {
+  const uint8_t phase = static_cast<uint8_t>((millis() / LIGHT_FLOW_STEP_MS) & 0xFF);
+  const RgbwColor base = scaleColor(BLUE_PURPLE_FLOW_BASE, brightness);
+  const RgbwColor blue = scaleColor(BLUE_PURPLE_FLOW_BLUE, brightness);
+
+  light1Target = blendColor(base, blue, triangleWave(phase));
+  light2Target = blendColor(base, blue, triangleWave(static_cast<uint8_t>(phase + LIGHT_FLOW_OFFSET)));
 }
 
 uint8_t manualFlowBrightness() {
@@ -414,6 +473,11 @@ RgbwColor manualAccentColor() {
 
 void setManualGradientTargets() {
   const uint8_t brightness = manualFlowBrightness();
+  if (isBluePurpleFlowPreset(manualLightColor)) {
+    setBluePurpleFlowTargets(brightness);
+    return;
+  }
+
   const uint8_t phase = static_cast<uint8_t>((millis() / LIGHT_FLOW_STEP_MS) & 0xFF);
   const RgbwColor base = scaleColor({manualLightColor.r, manualLightColor.g, manualLightColor.b, 0}, brightness);
   const RgbwColor accent = scaleColor(manualAccentColor(), brightness);
@@ -528,7 +592,7 @@ bool validateControlPacket(DreamControlEspNowPacket &packet) {
     return false;
   }
 
-  return packet.action > CONTROL_NONE && packet.action <= CONTROL_ALL_STOP;
+  return packet.action > CONTROL_NONE && packet.action <= CONTROL_BUBBLE_TRIGGER;
 }
 
 void updateSequenceCounters(uint32_t incomingSeq) {
@@ -579,14 +643,53 @@ uint16_t requestedStepperSteps(uint16_t value) {
 }
 
 uint8_t requestedStepperTargetMask(uint16_t value) {
-  const uint8_t mask = static_cast<uint8_t>(value) & STEPPER_TARGET_BOTH;
-  return mask == 0 ? STEPPER_TARGET_BOTH : mask;
+  (void)value;
+  return STEPPER_TARGET_SINGLE;
 }
 
 int32_t clampStepperTarget(int32_t target) {
   return constrain(target, static_cast<int32_t>(STEPPER_MIN_POSITION_STEPS), static_cast<int32_t>(STEPPER_MAX_POSITION_STEPS));
 }
 #endif
+
+bool bubbleFlowActive() {
+  return bubbleState != BUBBLE_IDLE;
+}
+
+uint32_t currentBubbleActiveMs() {
+  return bubbleFlowActive() ? millis() - bubbleStartMs : 0;
+}
+
+void startBubbleFlow(const char *source) {
+  if (!systemEnabled) {
+    Serial.print("EVENT=BUBBLE_TRIGGER_IGNORED REASON=SYSTEM_OFF SOURCE=");
+    Serial.println(source);
+    return;
+  }
+  if (bubbleFlowActive()) {
+    Serial.print("EVENT=BUBBLE_TRIGGER_IGNORED REASON=BUSY SOURCE=");
+    Serial.println(source);
+    return;
+  }
+
+  const uint32_t now = millis();
+  bubbleState = BUBBLE_FOGGING;
+  bubbleStateStartMs = now;
+  bubbleStartMs = now;
+  bubbleTriggerCount++;
+  autoLightReleased = false;
+  bubbleStepperStarted = false;
+#if DREAM_ENABLE_STEPPER_OUTPUT
+  manualStepperActive = false;
+  manualStepperMask = 0;
+  bubbleStepperTargetSteps = clampStepperTarget(stepperPositionSteps + BUBBLE_STEPPER_STEPS);
+#endif
+
+  Serial.print("EVENT=BUBBLE_TRIGGERED SOURCE=");
+  Serial.print(source);
+  Serial.print(" COUNT=");
+  Serial.println(bubbleTriggerCount);
+}
 
 bool isDuplicateControlPacket(const DreamControlEspNowPacket &packet) {
   return haveAppliedControlPacket &&
@@ -638,23 +741,40 @@ void applyControlPacket(const DreamControlEspNowPacket &packet, const uint8_t *m
   switch (packet.action) {
     case CONTROL_SYSTEM_ENABLE:
       systemEnabled = true;
+      manualLightEnabled = false;
+      manualLightColor = {0, 0, 0, 0};
+      autoLightReleased = false;
+#if DREAM_ENABLE_RELAY_OUTPUT
+      manualFogRequested = false;
+      manualFanRequested = false;
+#endif
+#if DREAM_ENABLE_STEPPER_OUTPUT
+      manualStepperActive = false;
+      manualStepperMask = 0;
+      if (!bubbleFlowActive()) {
+        stepperTargetSteps = stepperPositionSteps;
+        stepperPulseActive = false;
+        digitalWrite(STEPPER_STEP_PIN, HIGH);
+      }
+#endif
       break;
     case CONTROL_SYSTEM_DISABLE:
       systemEnabled = false;
       manualLightEnabled = false;
       manualLightColor = {0, 0, 0, 0};
+      autoLightReleased = false;
 #if DREAM_ENABLE_RELAY_OUTPUT
-      manualRelayRequested = false;
+      manualFogRequested = false;
+      manualFanRequested = false;
 #endif
 #if DREAM_ENABLE_STEPPER_OUTPUT
       manualStepperActive = false;
       manualStepperMask = 0;
-      stepperLeftTargetSteps = stepperLeftPositionSteps;
-      stepperRightTargetSteps = stepperRightPositionSteps;
-      leftStepperPulseActive = false;
-      rightStepperPulseActive = false;
-      digitalWrite(STEPPER_LEFT_STEP_PIN, HIGH);
-      digitalWrite(STEPPER_RIGHT_STEP_PIN, HIGH);
+      if (!bubbleFlowActive()) {
+        stepperTargetSteps = stepperPositionSteps;
+        stepperPulseActive = false;
+        digitalWrite(STEPPER_STEP_PIN, HIGH);
+      }
 #endif
       break;
     case CONTROL_LIGHT_AUTO:
@@ -683,19 +803,40 @@ void applyControlPacket(const DreamControlEspNowPacket &packet, const uint8_t *m
         break;
       }
 #if DREAM_ENABLE_RELAY_OUTPUT
-      manualRelayRequested = true;
+      manualFogRequested = true;
 #endif
       break;
     case CONTROL_RELAY_OFF:
 #if DREAM_ENABLE_RELAY_OUTPUT
-      manualRelayRequested = false;
+      manualFogRequested = false;
 #endif
+      break;
+    case CONTROL_FAN_ON:
+      if (!systemEnabled) {
+        Serial.println("EVENT=CONTROL_IGNORED SYSTEM=OFF ACTION=FAN_ON");
+        break;
+      }
+#if DREAM_ENABLE_RELAY_OUTPUT
+      manualFanRequested = true;
+#endif
+      break;
+    case CONTROL_FAN_OFF:
+#if DREAM_ENABLE_RELAY_OUTPUT
+      manualFanRequested = false;
+#endif
+      break;
+    case CONTROL_BUBBLE_TRIGGER:
+      startBubbleFlow("CONTROL");
       break;
     case CONTROL_STEPPER_FORWARD:
 #if DREAM_ENABLE_STEPPER_OUTPUT
     {
       if (!systemEnabled) {
         Serial.println("EVENT=CONTROL_IGNORED SYSTEM=OFF ACTION=STEPPER_FORWARD");
+        break;
+      }
+      if (bubbleFlowActive()) {
+        Serial.println("EVENT=CONTROL_IGNORED BUBBLE=BUSY ACTION=STEPPER_FORWARD");
         break;
       }
       const uint8_t targetMask = requestedStepperTargetMask(packet.arg2);
@@ -710,12 +851,7 @@ void applyControlPacket(const DreamControlEspNowPacket &packet, const uint8_t *m
       }
       manualStepperActive = true;
       manualStepperMask |= startMask;
-      if (startMask & STEPPER_TARGET_LEFT) {
-        manualStepperLeftTargetSteps = clampStepperTarget(stepperLeftPositionSteps + steps);
-      }
-      if (startMask & STEPPER_TARGET_RIGHT) {
-        manualStepperRightTargetSteps = clampStepperTarget(stepperRightPositionSteps + steps);
-      }
+      manualStepperTargetSteps = clampStepperTarget(stepperPositionSteps + steps);
     }
 #endif
       break;
@@ -724,6 +860,10 @@ void applyControlPacket(const DreamControlEspNowPacket &packet, const uint8_t *m
     {
       if (!systemEnabled) {
         Serial.println("EVENT=CONTROL_IGNORED SYSTEM=OFF ACTION=STEPPER_BACKWARD");
+        break;
+      }
+      if (bubbleFlowActive()) {
+        Serial.println("EVENT=CONTROL_IGNORED BUBBLE=BUSY ACTION=STEPPER_BACKWARD");
         break;
       }
       const uint8_t targetMask = requestedStepperTargetMask(packet.arg2);
@@ -738,39 +878,24 @@ void applyControlPacket(const DreamControlEspNowPacket &packet, const uint8_t *m
       }
       manualStepperActive = true;
       manualStepperMask |= startMask;
-      if (startMask & STEPPER_TARGET_LEFT) {
-        manualStepperLeftTargetSteps = clampStepperTarget(stepperLeftPositionSteps - steps);
-      }
-      if (startMask & STEPPER_TARGET_RIGHT) {
-        manualStepperRightTargetSteps = clampStepperTarget(stepperRightPositionSteps - steps);
-      }
+      manualStepperTargetSteps = clampStepperTarget(stepperPositionSteps - steps);
     }
 #endif
       break;
     case CONTROL_STEPPER_STOP:
 #if DREAM_ENABLE_STEPPER_OUTPUT
     {
+      if (bubbleFlowActive()) {
+        Serial.println("EVENT=CONTROL_IGNORED BUBBLE=BUSY ACTION=STEPPER_STOP");
+        break;
+      }
       const uint8_t targetMask = requestedStepperTargetMask(packet.arg2);
-      const uint8_t stopMask = targetMask & ~manualStepperMask;
-      if (stopMask != targetMask) {
-        Serial.print("EVENT=STEPPER_BUSY_IGNORED ACTION=STOP MASK=");
-        Serial.println(targetMask & manualStepperMask);
-      }
-      if (stopMask & STEPPER_TARGET_LEFT) {
-        manualStepperMask &= ~STEPPER_TARGET_LEFT;
-        stepperLeftTargetSteps = stepperLeftPositionSteps;
-        manualStepperLeftTargetSteps = stepperLeftPositionSteps;
-        leftStepperPulseActive = false;
-        digitalWrite(STEPPER_LEFT_STEP_PIN, HIGH);
-      }
-      if (stopMask & STEPPER_TARGET_RIGHT) {
-        manualStepperMask &= ~STEPPER_TARGET_RIGHT;
-        stepperRightTargetSteps = stepperRightPositionSteps;
-        manualStepperRightTargetSteps = stepperRightPositionSteps;
-        rightStepperPulseActive = false;
-        digitalWrite(STEPPER_RIGHT_STEP_PIN, HIGH);
-      }
+      manualStepperMask &= ~targetMask;
       manualStepperActive = manualStepperMask != 0;
+      stepperTargetSteps = stepperPositionSteps;
+      manualStepperTargetSteps = stepperPositionSteps;
+      stepperPulseActive = false;
+      digitalWrite(STEPPER_STEP_PIN, HIGH);
     }
 #endif
       break;
@@ -778,18 +903,19 @@ void applyControlPacket(const DreamControlEspNowPacket &packet, const uint8_t *m
       systemEnabled = false;
       manualLightEnabled = false;
       manualLightColor = {0, 0, 0, 0};
+      autoLightReleased = false;
 #if DREAM_ENABLE_RELAY_OUTPUT
-      manualRelayRequested = false;
+      manualFogRequested = false;
+      manualFanRequested = false;
 #endif
 #if DREAM_ENABLE_STEPPER_OUTPUT
       manualStepperActive = false;
       manualStepperMask = 0;
-      stepperLeftTargetSteps = stepperLeftPositionSteps;
-      stepperRightTargetSteps = stepperRightPositionSteps;
-      leftStepperPulseActive = false;
-      rightStepperPulseActive = false;
-      digitalWrite(STEPPER_LEFT_STEP_PIN, HIGH);
-      digitalWrite(STEPPER_RIGHT_STEP_PIN, HIGH);
+      if (!bubbleFlowActive()) {
+        stepperTargetSteps = stepperPositionSteps;
+        stepperPulseActive = false;
+        digitalWrite(STEPPER_STEP_PIN, HIGH);
+      }
 #endif
       break;
     default:
@@ -895,27 +1021,19 @@ void initDmx() {
 
 void initStepper() {
 #if DREAM_ENABLE_STEPPER_OUTPUT
-  pinMode(STEPPER_LEFT_STEP_PIN, OUTPUT);
-  pinMode(STEPPER_LEFT_DIR_PIN, OUTPUT);
-  pinMode(STEPPER_RIGHT_STEP_PIN, OUTPUT);
-  pinMode(STEPPER_RIGHT_DIR_PIN, OUTPUT);
-  digitalWrite(STEPPER_LEFT_STEP_PIN, HIGH);
-  digitalWrite(STEPPER_RIGHT_STEP_PIN, HIGH);
-  digitalWrite(STEPPER_LEFT_DIR_PIN, HIGH);
-  digitalWrite(STEPPER_RIGHT_DIR_PIN, STEPPER_RIGHT_DIR_INVERT ? LOW : HIGH);
+  pinMode(STEPPER_STEP_PIN, OUTPUT);
+  pinMode(STEPPER_DIR_PIN, OUTPUT);
+  digitalWrite(STEPPER_STEP_PIN, HIGH);
+  digitalWrite(STEPPER_DIR_PIN, STEPPER_DIR_INVERT ? LOW : HIGH);
   if (STEPPER_ENABLE_PIN >= 0) {
     pinMode(STEPPER_ENABLE_PIN, OUTPUT);
     digitalWrite(STEPPER_ENABLE_PIN, STEPPER_ENABLE_ACTIVE_LEVEL);
   }
   stepperState = STEPPER_IDLE;
-  Serial.print("EVENT=STEPPER_READY MODE=OUTPUT_ENABLED LEFT_STEP=");
-  Serial.print(STEPPER_LEFT_STEP_PIN);
-  Serial.print(" LEFT_DIR=");
-  Serial.print(STEPPER_LEFT_DIR_PIN);
-  Serial.print(" RIGHT_STEP=");
-  Serial.print(STEPPER_RIGHT_STEP_PIN);
-  Serial.print(" RIGHT_DIR=");
-  Serial.print(STEPPER_RIGHT_DIR_PIN);
+  Serial.print("EVENT=STEPPER_READY MODE=SINGLE_DRIVER STEP=");
+  Serial.print(STEPPER_STEP_PIN);
+  Serial.print(" DIR=");
+  Serial.print(STEPPER_DIR_PIN);
   Serial.print(" STEPS_PER_REV=");
   Serial.println(STEPPER_STEPS_PER_REV);
 #else
@@ -926,13 +1044,21 @@ void initStepper() {
 
 void initRelay() {
 #if DREAM_ENABLE_RELAY_OUTPUT
-  pinMode(RELAY_OUTPUT_PIN, OUTPUT);
-  digitalWrite(RELAY_OUTPUT_PIN, !RELAY_ACTIVE_LEVEL);
+  pinMode(FOG_RELAY_PIN, OUTPUT);
+  pinMode(FAN_RELAY_PIN, OUTPUT);
+  digitalWrite(FOG_RELAY_PIN, !RELAY_ACTIVE_LEVEL);
+  digitalWrite(FAN_RELAY_PIN, !RELAY_ACTIVE_LEVEL);
   relayState = RELAY_OFF;
-  relayStateStartMs = millis();
-  Serial.println("EVENT=RELAY_READY MODE=OUTPUT_ENABLED");
+  fanState = RELAY_OFF;
+  Serial.print("EVENT=RELAY_READY MODE=BUBBLE_OUTPUT FOG_PIN=");
+  Serial.print(FOG_RELAY_PIN);
+  Serial.print(" FAN_PIN=");
+  Serial.print(FAN_RELAY_PIN);
+  Serial.print(" ACTIVE_LEVEL=");
+  Serial.println(RELAY_ACTIVE_LEVEL == HIGH ? "HIGH" : "LOW");
 #else
   relayState = RELAY_OFF;
+  fanState = RELAY_OFF;
   Serial.println("EVENT=RELAY_READY MODE=DISABLED");
 #endif
 }
@@ -957,11 +1083,13 @@ void updateSafetyState() {
   }
 
   timeoutWasActive = false;
-  safetyState = latestEegPacket.poorSignal > POOR_SIGNAL_BAD_THRESHOLD ? SAFETY_SIGNAL_BAD : SAFETY_NORMAL;
+  safetyState = isEegSignalBad(latestEegPacket.poorSignal) ? SAFETY_SIGNAL_BAD : SAFETY_NORMAL;
 }
 
 void updateLightTargets() {
   if (!systemEnabled) {
+    manualLightEnabled = false;
+    manualLightColor = {0, 0, 0, 0};
     lightMode = LIGHT_OFF;
     light1Target = {0, 0, 0, 0};
     light2Target = {0, 0, 0, 0};
@@ -979,17 +1107,23 @@ void updateLightTargets() {
     return;
   }
 
-  if (safetyState == SAFETY_LINK_TIMEOUT) {
-    lightMode = LIGHT_TIMEOUT;
+  if (bubbleFlowActive() || !autoLightReleased) {
+    lightMode = LIGHT_OFF;
     light1Target = {0, 0, 0, 0};
     light2Target = {0, 0, 0, 0};
     return;
   }
 
+  if (safetyState == SAFETY_LINK_TIMEOUT) {
+    lightMode = LIGHT_IDLE;
+    setBluePurpleFlowTargets(255);
+    return;
+  }
+
   if (safetyState == SAFETY_SIGNAL_BAD) {
     lightMode = LIGHT_SIGNAL_BAD;
-    light1Target = {8, 0, 24, 0};
-    light2Target = {0, 8, 18, 0};
+    light1Target = {0, 0, 0, 0};
+    light2Target = {0, 0, 0, 0};
     return;
   }
 
@@ -1010,7 +1144,11 @@ void updateLightController() {
   }
 
   lastDmxRefreshMs = now;
-  if (manualLightEnabled || !systemEnabled) {
+  const bool forceImmediateLight = !systemEnabled ||
+                                   lightMode == LIGHT_SIGNAL_BAD ||
+                                   lightMode == LIGHT_TIMEOUT ||
+                                   (isColorOff(light1Target) && isColorOff(light2Target));
+  if (forceImmediateLight) {
     light1Current = light1Target;
     light2Current = light2Target;
   } else {
@@ -1024,22 +1162,14 @@ void updateLightController() {
 
 #if DREAM_ENABLE_STEPPER_OUTPUT
 void writeStepperStepPin(uint8_t targetMask, uint8_t level) {
-  if (targetMask & STEPPER_TARGET_LEFT) {
-    digitalWrite(STEPPER_LEFT_STEP_PIN, level);
-  }
-  if (targetMask & STEPPER_TARGET_RIGHT) {
-    digitalWrite(STEPPER_RIGHT_STEP_PIN, level);
-  }
+  (void)targetMask;
+  digitalWrite(STEPPER_STEP_PIN, level);
 }
 
 void writeStepperDirectionPin(uint8_t targetMask, bool forward) {
-  if (targetMask & STEPPER_TARGET_LEFT) {
-    digitalWrite(STEPPER_LEFT_DIR_PIN, forward ? HIGH : LOW);
-  }
-  if (targetMask & STEPPER_TARGET_RIGHT) {
-    const bool rightForward = STEPPER_RIGHT_DIR_INVERT ? !forward : forward;
-    digitalWrite(STEPPER_RIGHT_DIR_PIN, rightForward ? HIGH : LOW);
-  }
+  (void)targetMask;
+  const bool outputForward = STEPPER_DIR_INVERT ? !forward : forward;
+  digitalWrite(STEPPER_DIR_PIN, outputForward ? HIGH : LOW);
 }
 
 bool updateSingleStepper(uint8_t targetMask,
@@ -1074,23 +1204,19 @@ bool updateSingleStepper(uint8_t targetMask,
 }
 
 bool stepperTargetsReached() {
-  return stepperLeftTargetSteps == stepperLeftPositionSteps &&
-         stepperRightTargetSteps == stepperRightPositionSteps &&
-         !leftStepperPulseActive &&
-         !rightStepperPulseActive;
+  return stepperTargetSteps == stepperPositionSteps && !stepperPulseActive;
 }
 #endif
 
 void updateStepperController() {
 #if DREAM_ENABLE_STEPPER_OUTPUT
-  if (!systemEnabled) {
+  const bool bubbleActive = bubbleFlowActive();
+  if (!systemEnabled && !bubbleActive) {
     manualStepperActive = false;
     manualStepperMask = 0;
-    stepperLeftTargetSteps = stepperLeftPositionSteps;
-    stepperRightTargetSteps = stepperRightPositionSteps;
-    leftStepperPulseActive = false;
-    rightStepperPulseActive = false;
-    writeStepperStepPin(STEPPER_TARGET_BOTH, HIGH);
+    stepperTargetSteps = stepperPositionSteps;
+    stepperPulseActive = false;
+    writeStepperStepPin(STEPPER_TARGET_SINGLE, HIGH);
     if (STEPPER_ENABLE_PIN >= 0) {
       digitalWrite(STEPPER_ENABLE_PIN, !STEPPER_ENABLE_ACTIVE_LEVEL);
     }
@@ -1098,13 +1224,39 @@ void updateStepperController() {
     return;
   }
 
-  const bool allowAutoStepper = systemEnabled && safetyState == SAFETY_NORMAL;
+  if (bubbleActive) {
+    if (STEPPER_ENABLE_PIN >= 0) {
+      digitalWrite(STEPPER_ENABLE_PIN, STEPPER_ENABLE_ACTIVE_LEVEL);
+    }
+
+    if (bubbleState != BUBBLE_BLOWING || !bubbleStepperStarted) {
+      stepperTargetSteps = stepperPositionSteps;
+      stepperPulseActive = false;
+      writeStepperStepPin(STEPPER_TARGET_SINGLE, HIGH);
+      stepperState = STEPPER_IDLE;
+      return;
+    }
+
+    stepperState = STEPPER_MOVING;
+    stepperTargetSteps = bubbleStepperTargetSteps;
+    const uint32_t nowUs = micros();
+    const bool moving = updateSingleStepper(STEPPER_TARGET_SINGLE,
+                                            stepperPositionSteps,
+                                            stepperTargetSteps,
+                                            lastStepperPulseUs,
+                                            stepperPulseActive,
+                                            nowUs);
+    if (!moving) {
+      stepperState = STEPPER_IDLE;
+    }
+    return;
+  }
+
+  const bool allowAutoStepper = DREAM_ENABLE_EEG_STEPPER_AUTO && systemEnabled && safetyState == SAFETY_NORMAL;
   if (!manualStepperActive && !allowAutoStepper) {
-    stepperLeftTargetSteps = stepperLeftPositionSteps;
-    stepperRightTargetSteps = stepperRightPositionSteps;
-    leftStepperPulseActive = false;
-    rightStepperPulseActive = false;
-    writeStepperStepPin(STEPPER_TARGET_BOTH, HIGH);
+    stepperTargetSteps = stepperPositionSteps;
+    stepperPulseActive = false;
+    writeStepperStepPin(STEPPER_TARGET_SINGLE, HIGH);
     if (STEPPER_ENABLE_PIN >= 0) {
       digitalWrite(STEPPER_ENABLE_PIN, !STEPPER_ENABLE_ACTIVE_LEVEL);
     }
@@ -1118,61 +1270,39 @@ void updateStepperController() {
 
   if (manualStepperActive) {
     stepperState = STEPPER_MOVING;
-    if (manualStepperMask & STEPPER_TARGET_LEFT) {
-      stepperLeftTargetSteps = manualStepperLeftTargetSteps;
-    }
-    if (manualStepperMask & STEPPER_TARGET_RIGHT) {
-      stepperRightTargetSteps = manualStepperRightTargetSteps;
-    }
+    stepperTargetSteps = manualStepperTargetSteps;
   } else if (latestEegPacket.meditation >= STEPPER_MEDITATION_THRESHOLD) {
     stepperState = STEPPER_BREATHING;
-    const int32_t averagePositionSteps = (stepperLeftPositionSteps + stepperRightPositionSteps) / 2;
-    if (averagePositionSteps >= STEPPER_MAX_POSITION_STEPS) {
+    if (stepperPositionSteps >= STEPPER_MAX_POSITION_STEPS) {
       stepperBreathForward = false;
-    } else if (averagePositionSteps <= STEPPER_MIN_POSITION_STEPS) {
+    } else if (stepperPositionSteps <= STEPPER_MIN_POSITION_STEPS) {
       stepperBreathForward = true;
     }
-    stepperLeftTargetSteps = stepperBreathForward ? STEPPER_MAX_POSITION_STEPS : STEPPER_MIN_POSITION_STEPS;
-    stepperRightTargetSteps = stepperLeftTargetSteps;
+    stepperTargetSteps = stepperBreathForward ? STEPPER_MAX_POSITION_STEPS : STEPPER_MIN_POSITION_STEPS;
   } else if (latestEegPacket.attention >= STEPPER_ATTENTION_THRESHOLD) {
     stepperState = STEPPER_MOVING;
-    stepperLeftTargetSteps = STEPPER_MAX_POSITION_STEPS;
-    stepperRightTargetSteps = STEPPER_MAX_POSITION_STEPS;
+    stepperTargetSteps = STEPPER_MAX_POSITION_STEPS;
   } else {
-    stepperLeftTargetSteps = 0;
-    stepperRightTargetSteps = 0;
+    stepperTargetSteps = 0;
     stepperState = stepperTargetsReached() ? STEPPER_IDLE : STEPPER_MOVING;
   }
 
   const uint32_t nowUs = micros();
-  const bool leftMoving = updateSingleStepper(STEPPER_TARGET_LEFT,
-                                              stepperLeftPositionSteps,
-                                              stepperLeftTargetSteps,
-                                              lastLeftStepperPulseUs,
-                                              leftStepperPulseActive,
-                                              nowUs);
-  const bool rightMoving = updateSingleStepper(STEPPER_TARGET_RIGHT,
-                                               stepperRightPositionSteps,
-                                               stepperRightTargetSteps,
-                                               lastRightStepperPulseUs,
-                                               rightStepperPulseActive,
-                                               nowUs);
+  const bool moving = updateSingleStepper(STEPPER_TARGET_SINGLE,
+                                          stepperPositionSteps,
+                                          stepperTargetSteps,
+                                          lastStepperPulseUs,
+                                          stepperPulseActive,
+                                          nowUs);
 
   if (manualStepperActive) {
-    if ((manualStepperMask & STEPPER_TARGET_LEFT) &&
-        stepperLeftPositionSteps == manualStepperLeftTargetSteps &&
-        !leftStepperPulseActive) {
-      manualStepperMask &= ~STEPPER_TARGET_LEFT;
-    }
-    if ((manualStepperMask & STEPPER_TARGET_RIGHT) &&
-        stepperRightPositionSteps == manualStepperRightTargetSteps &&
-        !rightStepperPulseActive) {
-      manualStepperMask &= ~STEPPER_TARGET_RIGHT;
+    if (stepperPositionSteps == manualStepperTargetSteps && !stepperPulseActive) {
+      manualStepperMask = 0;
     }
     manualStepperActive = manualStepperMask != 0;
   }
 
-  if (!leftMoving && !rightMoving) {
+  if (!moving) {
     stepperState = STEPPER_IDLE;
   }
 #else
@@ -1183,66 +1313,56 @@ void updateStepperController() {
 void updateRelayController() {
 #if DREAM_ENABLE_RELAY_OUTPUT
   const uint32_t now = millis();
-  if (!systemEnabled || safetyState != SAFETY_NORMAL) {
-    digitalWrite(RELAY_OUTPUT_PIN, !RELAY_ACTIVE_LEVEL);
-    relayState = RELAY_OFF;
-    relayStateStartMs = now;
-    relayArmStartMs = 0;
-    return;
+  bool bubbleFogOn = false;
+  bool bubbleFanOn = false;
+
+  switch (bubbleState) {
+    case BUBBLE_IDLE:
+      break;
+    case BUBBLE_FOGGING:
+      bubbleFogOn = true;
+      if (now - bubbleStateStartMs >= BUBBLE_FOG_LEAD_MS) {
+        bubbleState = BUBBLE_BLOWING;
+        bubbleStateStartMs = now;
+        bubbleStepperStarted = true;
+#if DREAM_ENABLE_STEPPER_OUTPUT
+        bubbleStepperTargetSteps = clampStepperTarget(stepperPositionSteps + BUBBLE_STEPPER_STEPS);
+#endif
+      }
+      break;
+    case BUBBLE_BLOWING:
+      bubbleFogOn = true;
+      bubbleFanOn = true;
+      if (now - bubbleStateStartMs >= BUBBLE_BLOW_MS) {
+        bubbleState = BUBBLE_FINISHING;
+        bubbleStateStartMs = now;
+      }
+      break;
+    case BUBBLE_FINISHING:
+      bubbleFanOn = true;
+      if (now - bubbleStateStartMs >= BUBBLE_FAN_TAIL_MS) {
+        bubbleState = BUBBLE_IDLE;
+        bubbleStateStartMs = now;
+        bubbleStepperStarted = false;
+        autoLightReleased = true;
+        Serial.print("EVENT=BUBBLE_DONE ACTIVE_MS=");
+        Serial.println(now - bubbleStartMs);
+      }
+      break;
   }
 
-  switch (relayState) {
-    case RELAY_OFF:
-      digitalWrite(RELAY_OUTPUT_PIN, !RELAY_ACTIVE_LEVEL);
-      if (manualRelayRequested) {
-        relayState = RELAY_ON;
-        relayStateStartMs = now;
-        digitalWrite(RELAY_OUTPUT_PIN, RELAY_ACTIVE_LEVEL);
-      } else if (latestEegPacket.attention > 75) {
-        relayState = RELAY_ARMING;
-        relayArmStartMs = now;
-        relayStateStartMs = now;
-      }
-      break;
-    case RELAY_ARMING:
-      digitalWrite(RELAY_OUTPUT_PIN, !RELAY_ACTIVE_LEVEL);
-      if (manualRelayRequested) {
-        relayState = RELAY_ON;
-        relayStateStartMs = now;
-        digitalWrite(RELAY_OUTPUT_PIN, RELAY_ACTIVE_LEVEL);
-      } else if (latestEegPacket.attention <= 75) {
-        relayState = RELAY_OFF;
-        relayStateStartMs = now;
-      } else if (now - relayArmStartMs >= RELAY_ARM_MS) {
-        relayState = RELAY_ON;
-        relayStateStartMs = now;
-        digitalWrite(RELAY_OUTPUT_PIN, RELAY_ACTIVE_LEVEL);
-      }
-      break;
-    case RELAY_ON:
-      digitalWrite(RELAY_OUTPUT_PIN, RELAY_ACTIVE_LEVEL);
-      if ((manualRelayRequested && now - relayStateStartMs >= RELAY_MANUAL_MAX_ON_MS) ||
-          (!manualRelayRequested && now - relayStateStartMs >= RELAY_ON_MS)) {
-        manualRelayRequested = false;
-        relayState = RELAY_COOLDOWN;
-        relayStateStartMs = now;
-        digitalWrite(RELAY_OUTPUT_PIN, !RELAY_ACTIVE_LEVEL);
-      }
-      break;
-    case RELAY_COOLDOWN:
-      digitalWrite(RELAY_OUTPUT_PIN, !RELAY_ACTIVE_LEVEL);
-      if (now - relayStateStartMs >= RELAY_COOLDOWN_MS) {
-        relayState = RELAY_OFF;
-        relayStateStartMs = now;
-      }
-      break;
-    default:
-      relayState = RELAY_FAULT;
-      digitalWrite(RELAY_OUTPUT_PIN, !RELAY_ACTIVE_LEVEL);
-      break;
-  }
+  const bool bubbleActive = bubbleFlowActive();
+  const bool manualOutputsAllowed = systemEnabled && !bubbleActive;
+  const bool fogOn = bubbleFogOn || (manualOutputsAllowed && manualFogRequested);
+  const bool fanOn = bubbleFanOn || (manualOutputsAllowed && manualFanRequested);
+
+  digitalWrite(FOG_RELAY_PIN, fogOn ? RELAY_ACTIVE_LEVEL : !RELAY_ACTIVE_LEVEL);
+  digitalWrite(FAN_RELAY_PIN, fanOn ? RELAY_ACTIVE_LEVEL : !RELAY_ACTIVE_LEVEL);
+  relayState = fogOn ? RELAY_ON : RELAY_OFF;
+  fanState = fanOn ? RELAY_ON : RELAY_OFF;
 #else
   relayState = RELAY_OFF;
+  fanState = RELAY_OFF;
 #endif
 }
 
@@ -1284,6 +1404,12 @@ void sendMicStatus() {
   packet.relayOutputEnabled = DREAM_ENABLE_RELAY_OUTPUT ? 1 : 0;
   packet.stepperOutputEnabled = DREAM_ENABLE_STEPPER_OUTPUT ? 1 : 0;
   packet.systemEnabled = systemEnabled ? 1 : 0;
+  packet.fanState = fanState;
+  packet.bubbleState = bubbleState;
+  packet.bubbleOutputEnabled = DREAM_ENABLE_RELAY_OUTPUT ? 1 : 0;
+  packet.reserved2 = 0;
+  packet.bubbleTriggerCount = bubbleTriggerCount;
+  packet.bubbleActiveMs = currentBubbleActiveMs();
   packet.checksum = calculatePacketChecksum(packet);
 
   const esp_err_t result = esp_now_send(BROADCAST_MAC, reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
@@ -1341,19 +1467,23 @@ void printStatus() {
   Serial.print(" STEPPER=");
   Serial.print(stepperState);
 #if DREAM_ENABLE_STEPPER_OUTPUT
-  Serial.print(" STEPPER_L_POS=");
-  Serial.print(stepperLeftPositionSteps);
-  Serial.print(" STEPPER_R_POS=");
-  Serial.print(stepperRightPositionSteps);
-  Serial.print(" STEPPER_L_TARGET=");
-  Serial.print(stepperLeftTargetSteps);
-  Serial.print(" STEPPER_R_TARGET=");
-  Serial.print(stepperRightTargetSteps);
+  Serial.print(" STEPPER_POS=");
+  Serial.print(stepperPositionSteps);
+  Serial.print(" STEPPER_TARGET=");
+  Serial.print(stepperTargetSteps);
   Serial.print(" STEPPER_MANUAL_MASK=");
   Serial.print(manualStepperMask);
 #endif
   Serial.print(" RELAY=");
   Serial.print(relayState);
+  Serial.print(" FAN=");
+  Serial.print(fanState);
+  Serial.print(" BUBBLE=");
+  Serial.print(bubbleState);
+  Serial.print(" BUBBLE_COUNT=");
+  Serial.print(bubbleTriggerCount);
+  Serial.print(" BUBBLE_ACTIVE_MS=");
+  Serial.print(currentBubbleActiveMs());
   Serial.print(" SAFETY=");
   Serial.print(safetyState);
   Serial.print(" LAST_ACTION=");
@@ -1364,6 +1494,8 @@ void printStatus() {
   Serial.print(DREAM_ENABLE_RELAY_OUTPUT ? 1 : 0);
   Serial.print(" STEPPER_OUTPUT_ENABLED=");
   Serial.print(DREAM_ENABLE_STEPPER_OUTPUT ? 1 : 0);
+  Serial.print(" BUBBLE_OUTPUT_ENABLED=");
+  Serial.print(DREAM_ENABLE_RELAY_OUTPUT ? 1 : 0);
   Serial.print(" SYSTEM_ENABLED=");
   Serial.println(systemEnabled ? 1 : 0);
 }
@@ -1390,9 +1522,9 @@ void setup() {
 
 void loop() {
   updateSafetyState();
+  updateRelayController();
   updateStepperController();
   updateLightController();
-  updateRelayController();
 
   const uint32_t now = millis();
   if (now - lastStatusSendMs >= STATUS_SEND_MS) {

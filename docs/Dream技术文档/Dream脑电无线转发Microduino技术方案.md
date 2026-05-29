@@ -7,7 +7,7 @@
 
 补充更新：2026-05-28
 
-电脑端同时提供浏览器实时前端。前端只显示真实 EEG、M5Stack 和 Microduino 回传状态；没有真实数据时显示 `--` 或等待。所有控制按钮都有发送中、已发送、失败反馈。当前 Microduino 正式联动固件已支持两盏 DMX RGBW 灯、左右步进电机目标选择和状态回传；继电器物理输出仍默认关闭。
+电脑端同时提供浏览器实时前端。前端只显示真实 EEG、M5Stack 和 Microduino 回传状态；没有真实数据时显示 `--` 或等待。所有控制按钮都有发送中、已发送、失败反馈。当前 Microduino 正式联动固件已支持两盏 DMX RGBW 灯、单步进驱动板控制和状态回传；继电器物理输出仍默认关闭。
 
 ## 1. 当前结论
 
@@ -40,7 +40,7 @@ Microduino 只承担执行控制角色：
 ```text
 接收 ESP-NOW EEG 帧
 维护本地安全状态
-控制两盏 DMX 灯 / 左右步进电机 / 继电器状态机
+控制两盏 DMX 灯 / 单步进驱动板 / 继电器状态机
 ```
 
 这个方案比电脑直接 Wi-Fi UDP 到 Microduino 更适合现场人多的情况，因为电脑到 M5Stack 是有线 USB，M5Stack 到 Microduino 使用 ESP-NOW 短包，不依赖热点、路由器或电脑无线网卡。
@@ -78,7 +78,7 @@ Microduino 负责安全
 | 脑电设备 | `eegDevice` | 蓝牙发送 ThinkGear 原始脑电数据到电脑 |
 | 电脑 | `pcBridge` | 读取脑电 COM，解析 ThinkGear，输出统一 EEG 帧到 M5Stack |
 | M5Stack | `m5GatewayMonitor` | USB 串口接收 EEG，屏幕显示，ESP-NOW 转发给 Microduino |
-| Microduino | `micController` | ESP-NOW 接收 EEG / CMD，控制双 DMX 灯、左右步进电机和继电器状态机 |
+| Microduino | `micController` | ESP-NOW 接收 EEG / CMD，控制双 DMX 灯、单步进驱动板和继电器状态机 |
 | DMX 灯具 | `dmxLights` | 光效输出 |
 | 步进电机 | `stepperMotor` | 运动输出 |
 | 继电器 | `relayOutput` | 开关输出 |
@@ -301,7 +301,7 @@ struct DreamControlEspNowPacket {
 | 字段 | 含义 |
 | --- | --- |
 | `arg1` | 步数，`0` 时按一圈 `1600` 步处理 |
-| `arg2` | 目标掩码：`1` 左、`2` 右、`3` 左右，`0` 也按左右处理 |
+| `arg2` | 当前固定为 `1`，Microduino 端统一映射到单步进驱动板 |
 | `arg3 / arg4` | 当前保留 |
 
 ### 5.3 M5Stack 本地显示状态
@@ -477,7 +477,7 @@ OFF -> ARMING -> ON -> COOLDOWN -> OFF
 
 ```text
 DISABLED -> IDLE -> MOVING / BREATHING -> IDLE
-前端目标：左 / 右 / 左右
+前端目标：固定单步进驱动板
 ```
 
 ## 10. 实施阶段
@@ -581,7 +581,7 @@ M5Stack 明确显示链路异常
 M5Stack 显示 EEG 和链路状态
 M5Stack ESP-NOW -> Microduino
 Microduino 本地安全状态机
-Microduino 控制双 DMX 灯、左右步进电机和继电器状态机
+Microduino 控制双 DMX 灯、单步进驱动板和继电器状态机
 ```
 
 核心原则：
