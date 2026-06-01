@@ -28,6 +28,7 @@ enum DreamPacketType : uint8_t {
   DREAM_PACKET_EEG = 1,
   DREAM_PACKET_MIC_STATUS = 2,
   DREAM_PACKET_CONTROL = 3,
+  DREAM_PACKET_VIBRATION_STATUS = 4,
 };
 
 enum DreamPacketFlags : uint8_t {
@@ -171,8 +172,21 @@ struct __attribute__((packed)) DreamControlEspNowPacket {
   uint16_t checksum;
 };
 
+struct __attribute__((packed)) DreamVibrationStatusPacket {
+  uint32_t magic;
+  uint16_t version;
+  uint8_t type;
+  uint8_t flags;
+  uint16_t sensorValue;
+  uint8_t vibrationDetected;
+  uint8_t bubbleState;
+  uint32_t timestamp;
+  uint8_t checksum;
+};
+
 DreamEegEspNowPacket latestEegPacket = {};
 DreamMicStatusPacket latestMicStatus = {};
+DreamVibrationStatusPacket latestVibrationStatus = {};
 
 char serialLine[SERIAL_LINE_BUFFER_SIZE] = {};
 uint8_t serialLineIndex = 0;
@@ -192,12 +206,18 @@ uint32_t lastStatusPrintMs = 0;
 bool espNowReady = false;
 bool haveEeg = false;
 bool haveMicStatus = false;
+bool haveVibrationStatus = false;
 bool pressurePressed = false;
 bool pressureStablePressed = false;
 bool pressureLastRawPressed = false;
 uint32_t pressureLastChangeMs = 0;
 uint32_t pressureLastTriggerMs = 0;
 uint32_t pressureTriggerCount = 0;
+uint32_t lastVibrationStatusMs = 0;
+uint32_t vibrationTriggerCount = 0;
+bool lastVibrationDetected = false;
+bool vibrationTriggerPending = false;
+uint32_t vibrationLastTriggerMs = 0;
 esp_now_send_status_t lastSendStatus = ESP_NOW_SEND_FAIL;
 
 uint16_t packetChecksum(const uint8_t *data, size_t length) {
@@ -554,6 +574,30 @@ bool readPressureSensorRaw() {
 #endif
 }
 
+bool bubbleFlowBusy(uint32_t now) {
+  const uint32_t micAgeMs = haveMicStatus ? now - lastMicStatusMs : 0xFFFFFFFFUL;
+  return haveMicStatus &&
+         micAgeMs < MIC_STATUS_TIMEOUT_MS &&
+         latestMicStatus.bubbleState != BUBBLE_IDLE;
+}
+
+void triggerBubbleFromInput(const char *source) {
+  const uint32_t now = millis();
+  if (bubbleFlowBusy(now)) {
+    Serial.print("EVENT=BUBBLE_TRIGGER_IGNORED SOURCE=");
+    Serial.print(source);
+    Serial.println(" REASON=BUBBLE_BUSY");
+    return;
+  }
+
+  pressureTriggerCount++;
+  pressureLastTriggerMs = now;
+  sendLocalControl(CONTROL_BUBBLE_TRIGGER);
+  Serial.print("EVENT=BUBBLE_TRIGGER SOURCE=");
+  Serial.print(source);
+  Serial.println(" ACTION=BUBBLE_TRIGGER");
+}
+
 void initPressureSensor() {
 #if PRESSURE_SENSOR_PIN >= 0
   pinMode(PRESSURE_SENSOR_PIN, INPUT);
@@ -597,19 +641,16 @@ void handlePressureSensor() {
     return;
   }
 
-  const uint32_t micAgeMs = haveMicStatus ? now - lastMicStatusMs : 0xFFFFFFFFUL;
-  const bool bubbleBusy = haveMicStatus &&
-                          micAgeMs < MIC_STATUS_TIMEOUT_MS &&
-                          latestMicStatus.bubbleState != BUBBLE_IDLE;
-  if (bubbleBusy) {
-    Serial.println("EVENT=PRESSURE_TRIGGER_IGNORED REASON=BUBBLE_BUSY");
+  triggerBubbleFromInput("M5_PRESSURE");
+}
+
+void handleVibrationTrigger() {
+  if (!vibrationTriggerPending) {
     return;
   }
 
-  pressureTriggerCount++;
-  pressureLastTriggerMs = now;
-  sendLocalControl(CONTROL_BUBBLE_TRIGGER);
-  Serial.println("EVENT=PRESSURE_TRIGGER ACTION=BUBBLE_TRIGGER");
+  vibrationTriggerPending = false;
+  triggerBubbleFromInput("ESP32S3_VIBRATION");
 }
 
 void handleButtons() {
@@ -704,6 +745,33 @@ void onEspNowSent(const uint8_t *macAddress, esp_now_send_status_t status) {
 }
 
 void handleEspNowReceive(const uint8_t *macAddress, const uint8_t *data, int dataLength) {
+  if (dataLength == static_cast<int>(sizeof(DreamVibrationStatusPacket))) {
+    DreamVibrationStatusPacket packet = {};
+    memcpy(&packet, data, sizeof(packet));
+    if (packet.magic != DREAM_PACKET_MAGIC ||
+        packet.version != DREAM_PROTOCOL_VERSION ||
+        packet.type != DREAM_PACKET_VIBRATION_STATUS) {
+      return;
+    }
+
+    const uint16_t expectedChecksum = calculatePacketChecksum(packet);
+    if (packet.checksum != static_cast<uint8_t>(expectedChecksum & 0xFF)) {
+      return;
+    }
+
+    latestVibrationStatus = packet;
+    haveVibrationStatus = true;
+    lastVibrationStatusMs = millis();
+    const bool vibrationDetected = packet.vibrationDetected != 0;
+    if (vibrationDetected && !lastVibrationDetected) {
+      vibrationTriggerCount++;
+      vibrationTriggerPending = true;
+      vibrationLastTriggerMs = millis();
+    }
+    lastVibrationDetected = vibrationDetected;
+    return;
+  }
+
   if (dataLength != static_cast<int>(sizeof(DreamMicStatusPacket))) {
     return;
   }
@@ -881,9 +949,11 @@ void drawDashboardContent(Canvas &canvas, int16_t yShift) {
 
   canvas.fillRect(0, 232 + yShift, 320, 8, 0x0000);
   canvas.setCursor(8, 232 + yShift);
-  canvas.setTextColor(pressurePressed ? 0xFFE0 : 0xFFFF, 0x0000);
-  const uint32_t pressureAgeMs = pressureLastTriggerMs == 0 ? 0 : now - pressureLastTriggerMs;
-  canvas.printf("Press:%s last:%lums", pressurePressed ? "DOWN" : "UP", static_cast<unsigned long>(pressureAgeMs));
+  const bool vibrationDisplayFresh = haveVibrationStatus && now - lastVibrationStatusMs < MIC_STATUS_TIMEOUT_MS;
+  const bool vibrationDetected = vibrationDisplayFresh && latestVibrationStatus.vibrationDetected;
+  const uint32_t vibrationDisplayLastMs = vibrationLastTriggerMs == 0 ? 0 : now - vibrationLastTriggerMs;
+  canvas.setTextColor(vibrationDetected ? 0xFFE0 : 0xFFFF, 0x0000);
+  canvas.printf("Vib:%s last:%lums", vibrationDetected ? "ON" : "OFF", static_cast<unsigned long>(vibrationDisplayLastMs));
 
   canvas.setCursor(212, 232 + yShift);
   canvas.setTextColor(micStatusFresh && latestMicStatus.systemEnabled ? 0x07E0 : 0xF800, 0x0000);
@@ -897,7 +967,10 @@ void drawDashboard() {
 void printStatus() {
   const uint32_t now = millis();
   const uint32_t micAgeMs = haveMicStatus ? now - lastMicStatusMs : 0;
+  const uint32_t vibrationAgeMs = haveVibrationStatus ? now - lastVibrationStatusMs : 0;
+  const bool vibrationStatusFresh = haveVibrationStatus && vibrationAgeMs < MIC_STATUS_TIMEOUT_MS;
   const bool micStatusFresh = haveMicStatus && micAgeMs < MIC_STATUS_TIMEOUT_MS;
+  const uint32_t vibrationLastMs = vibrationLastTriggerMs == 0 ? 0xFFFFFFFFUL : now - vibrationLastTriggerMs;
   const uint32_t pressureLastMs = pressureLastTriggerMs == 0 ? 0xFFFFFFFFUL : now - pressureLastTriggerMs;
   Serial.print("EVENT=M5_STATUS SERIAL_FRAMES=");
   Serial.print(serialFrameCount);
@@ -981,6 +1054,20 @@ void printStatus() {
   Serial.print(latestMicStatus.bubbleOutputEnabled);
   Serial.print(" MIC_SYSTEM_ENABLED=");
   Serial.print(latestMicStatus.systemEnabled);
+  Serial.print(" VIB_STATUS=");
+  Serial.print(vibrationStatusFresh ? "YES" : "NO");
+  Serial.print(" VIB_AGE_MS=");
+  Serial.print(vibrationAgeMs);
+  Serial.print(" VIB_DETECTED=");
+  Serial.print(vibrationStatusFresh && latestVibrationStatus.vibrationDetected ? 1 : 0);
+  Serial.print(" VIB_SENSOR=");
+  Serial.print(vibrationStatusFresh ? latestVibrationStatus.sensorValue : 0);
+  Serial.print(" VIB_BUBBLE=");
+  Serial.print(vibrationStatusFresh ? latestVibrationStatus.bubbleState : 0);
+  Serial.print(" VIB_TRIGGER_COUNT=");
+  Serial.print(vibrationTriggerCount);
+  Serial.print(" VIB_LAST_MS=");
+  Serial.print(vibrationLastMs);
   Serial.print(" PRESSURE=");
   Serial.print(pressurePressed ? 1 : 0);
   Serial.print(" PRESSURE_TRIGGER_COUNT=");
@@ -1014,6 +1101,7 @@ void loop() {
   M5.update();
   handleButtons();
   handlePressureSensor();
+  handleVibrationTrigger();
   handleSerialInput();
 
   const uint32_t now = millis();

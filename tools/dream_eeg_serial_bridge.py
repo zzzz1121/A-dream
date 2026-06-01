@@ -473,6 +473,28 @@ INDEX_HTML = r"""<!doctype html>
       line-height: 1.45;
       white-space: pre-wrap;
     }
+    .history-list {
+      min-height: 176px;
+      max-height: 260px;
+      overflow: auto;
+      display: grid;
+      gap: 8px;
+    }
+    .history-item {
+      min-height: 42px;
+      display: grid;
+      grid-template-columns: 84px minmax(0, 1fr) 72px;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .history-item strong {
+      color: var(--ink);
+      font-size: 14px;
+      overflow-wrap: anywhere;
+    }
     @media (max-width: 1100px) {
       .app { grid-template-columns: 1fr; }
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
@@ -554,10 +576,11 @@ INDEX_HTML = r"""<!doctype html>
             </div>
           </section>
           <section>
-            <div class="section-head"><h2>按压触发</h2><span id="pressureSource" class="pill neutral">M5</span></div>
-            <div class="metric-grid three">
-              <div class="metric"><div class="label">按压状态</div><div class="value small" id="pressureState">--</div><div class="label">传感器</div></div>
-              <div class="metric"><div class="label">上次触发</div><div class="value small" id="pressureLast">--</div><div class="label" id="pressureCount">count --</div></div>
+            <div class="section-head"><h2>震动触发</h2><span id="vibrationSource" class="pill neutral">等待震动板</span></div>
+            <div class="metric-grid four">
+              <div class="metric"><div class="label">震动状态</div><div class="value small" id="vibrationState">--</div><div class="label" id="vibrationDetail">ESP32-S3</div></div>
+              <div class="metric"><div class="label">触发次数</div><div class="value small" id="vibrationCount">--</div><div class="label">等同泡泡按钮</div></div>
+              <div class="metric"><div class="label">距上一次</div><div class="value small" id="vibrationLast">--</div><div class="label">震动触发</div></div>
               <div class="metric"><div class="label">泡泡流程</div><div class="value small" id="bubbleState">--</div><div class="label" id="bubbleDetail">--</div></div>
             </div>
           </section>
@@ -640,6 +663,12 @@ INDEX_HTML = r"""<!doctype html>
             <div class="section-head"><h2>事件日志</h2><button id="clearLog">清空本地显示</button></div>
             <div id="log" class="log">等待真实事件...</div>
           </section>
+          <section>
+            <div class="section-head"><h2>震动记录</h2><span id="vibrationHistoryCount" class="pill neutral">0 条</span></div>
+            <div id="vibrationHistory" class="history-list">
+              <div class="history-item"><span>--:--:--</span><strong>等待震动触发</strong><span>count --</span></div>
+            </div>
+          </section>
         </div>
       </div>
     </main>
@@ -667,6 +696,8 @@ INDEX_HTML = r"""<!doctype html>
     let latestRelayOutputEnabled = false;
     let latestFogOn = false;
     let latestFanOn = false;
+    let lastVibrationTriggerCount = null;
+    const vibrationHistory = [];
     const STEPPER_SINGLE_TARGET = 1;
     const systemOutputActions = new Set([
       "light_auto",
@@ -813,6 +844,34 @@ INDEX_HTML = r"""<!doctype html>
         ids.log.textContent = "等待真实事件...";
       }
     };
+    const renderVibrationHistory = () => {
+      setText("vibrationHistoryCount", `${vibrationHistory.length} 条`);
+      if (!vibrationHistory.length) {
+        ids.vibrationHistory.innerHTML = '<div class="history-item"><span>--:--:--</span><strong>等待震动触发</strong><span>count --</span></div>';
+        return;
+      }
+      ids.vibrationHistory.innerHTML = vibrationHistory.map((item) => (
+        `<div class="history-item"><span>${item.time}</span><strong>${item.label}</strong><span>count ${item.count}</span></div>`
+      )).join("");
+    };
+    const updateVibrationHistory = (state, vibrationSeen) => {
+      if (!vibrationSeen) return;
+      const count = Number(state.m5.vibrationTriggerCount || 0);
+      if (lastVibrationTriggerCount === null) {
+        lastVibrationTriggerCount = count;
+        return;
+      }
+      if (count <= lastVibrationTriggerCount) return;
+      const now = new Date();
+      vibrationHistory.unshift({
+        time: now.toLocaleTimeString("zh-CN", {hour12: false}),
+        label: state.m5.vibrationDetected ? "检测到震动" : "震动触发",
+        count
+      });
+      vibrationHistory.splice(20);
+      lastVibrationTriggerCount = count;
+      renderVibrationHistory();
+    };
     const sendCommand = async (button) => {
       const action = button.dataset.action;
       const label = buttonLabels.get(button) || action;
@@ -859,6 +918,7 @@ INDEX_HTML = r"""<!doctype html>
     });
     ids.stepperTurns.addEventListener("input", updateStepperPreview);
     updateStepperPreview();
+    renderVibrationHistory();
 
     const update = (state) => {
       const eegSeen = Boolean(state.eeg.seen);
@@ -868,6 +928,7 @@ INDEX_HTML = r"""<!doctype html>
       const commandReady = Boolean(state.bridge.targetOpen);
       const outputReady = Boolean(commandReady && micSeen && state.mic.systemEnabled);
       const bubbleActive = Boolean(micSeen && state.mic.bubbleState > 0);
+      const vibrationSeen = Boolean(m5Seen && state.m5.vibrationStatus === "YES" && state.m5.vibrationAgeMs >= 0 && state.m5.vibrationAgeMs < 3000);
       const fogOn = Boolean(micSeen && state.mic.relayState === 2);
       const fanOn = Boolean(micSeen && state.mic.fanState === 2);
       const relayOutputEnabled = Boolean(micSeen && state.mic.relayOutputEnabled);
@@ -908,10 +969,12 @@ INDEX_HTML = r"""<!doctype html>
       setText("lastAction", actionText(micSeen, state.mic.lastControlAction));
       setText("relayEnabled", micSeen ? (state.mic.relayOutputEnabled ? "雾机/风扇输出已启用" : "固件输出关闭") : "--");
       setText("stepperEnabled", micSeen ? (state.mic.stepperOutputEnabled ? "固件输出已启用" : "固件输出关闭") : "--");
-      setText("pressureState", m5Seen ? (state.m5.pressurePressed ? "已按下" : "未按下") : "--");
-      setText("pressureLast", m5Seen && state.m5.pressureLastMs >= 0 ? `${Math.round(state.m5.pressureLastMs / 1000)} 秒` : "--");
-      setText("pressureCount", m5Seen ? `count ${state.m5.pressureTriggerCount}` : "count --");
-      pill(ids.pressureSource, m5Seen ? (state.m5.pressurePressed ? "warn" : "ok") : "neutral", m5Seen ? "M5 在线" : "M5 等待");
+      setText("vibrationState", vibrationSeen ? (state.m5.vibrationDetected ? "震动中" : "静止") : "--");
+      setText("vibrationDetail", vibrationSeen ? `value ${state.m5.vibrationSensor} / count ${state.m5.vibrationTriggerCount}` : "ESP32-S3 等待");
+      setText("vibrationCount", vibrationSeen ? state.m5.vibrationTriggerCount : "--");
+      setText("vibrationLast", vibrationSeen && state.m5.vibrationLastMs >= 0 ? `${Math.round(state.m5.vibrationLastMs / 1000)} 秒` : "--");
+      updateVibrationHistory(state, vibrationSeen);
+      pill(ids.vibrationSource, vibrationSeen ? (state.m5.vibrationDetected ? "warn" : "ok") : "neutral", vibrationSeen ? "震动板在线" : (m5Seen ? "等待震动板" : "M5 等待"));
       setText("bubbleState", modeText(micSeen, bubbleStates, state.mic.bubbleState));
       setText("bubbleDetail", micSeen ? `count ${state.mic.bubbleTriggerCount} / ${Math.round(state.mic.bubbleActiveMs / 1000)} 秒` : "--");
       pill(
@@ -991,6 +1054,13 @@ class M5Status:
     mic_status: str = "NO"
     serial_age_ms: int = 0
     mic_age_ms: int = 0
+    vibration_status: str = "NO"
+    vibration_age_ms: int = 0
+    vibration_detected: int = 0
+    vibration_sensor: int = 0
+    vibration_bubble_state: int = 0
+    vibration_trigger_count: int = 0
+    vibration_last_ms: int = -1
     pressure_pressed: int = 0
     pressure_trigger_count: int = 0
     pressure_last_ms: int = -1
@@ -1319,6 +1389,14 @@ class DreamBridge:
                 self.m5_status.mic_status = pairs.get("MIC_STATUS", "NO")
                 self.m5_status.serial_age_ms = int_value(pairs, "SERIAL_AGE_MS")
                 self.m5_status.mic_age_ms = int_value(pairs, "MIC_AGE_MS")
+                self.m5_status.vibration_status = pairs.get("VIB_STATUS", "NO")
+                self.m5_status.vibration_age_ms = int_value(pairs, "VIB_AGE_MS", -1)
+                self.m5_status.vibration_detected = int_value(pairs, "VIB_DETECTED")
+                self.m5_status.vibration_sensor = int_value(pairs, "VIB_SENSOR")
+                self.m5_status.vibration_bubble_state = int_value(pairs, "VIB_BUBBLE")
+                self.m5_status.vibration_trigger_count = int_value(pairs, "VIB_TRIGGER_COUNT")
+                vibration_last_ms = int_value(pairs, "VIB_LAST_MS", -1)
+                self.m5_status.vibration_last_ms = -1 if vibration_last_ms >= 0x7FFFFFFF else vibration_last_ms
                 self.m5_status.pressure_pressed = int_value(pairs, "PRESSURE")
                 pressure_last_ms = int_value(pairs, "PRESSURE_LAST_MS", -1)
                 self.m5_status.pressure_last_ms = -1 if pressure_last_ms >= 0x7FFFFFFF else pressure_last_ms
@@ -1444,6 +1522,13 @@ class DreamBridge:
                     "micStatus": self.m5_status.mic_status,
                     "serialAgeMs": self.m5_status.serial_age_ms,
                     "micAgeMs": self.m5_status.mic_age_ms,
+                    "vibrationStatus": self.m5_status.vibration_status,
+                    "vibrationAgeMs": self.m5_status.vibration_age_ms,
+                    "vibrationDetected": bool(self.m5_status.vibration_detected),
+                    "vibrationSensor": self.m5_status.vibration_sensor,
+                    "vibrationBubbleState": self.m5_status.vibration_bubble_state,
+                    "vibrationTriggerCount": self.m5_status.vibration_trigger_count,
+                    "vibrationLastMs": self.m5_status.vibration_last_ms,
                     "pressurePressed": bool(self.m5_status.pressure_pressed),
                     "pressureTriggerCount": self.m5_status.pressure_trigger_count,
                     "pressureLastMs": self.m5_status.pressure_last_ms,
