@@ -23,6 +23,7 @@
 #define VIBRATION_TRIGGER_SAMPLES 1
 #define VIBRATION_RELEASE_SAMPLES 60
 #define VIBRATION_HOLD_MS 300
+#define VIBRATION_RETRIGGER_LOCKOUT_MS 1500
 
 // Bubble trigger relay configuration
 #define PILLOW_BUBBLE_RELAY_PIN 5
@@ -143,7 +144,8 @@ void loop() {
 void setupPins() {
   if (VIBRATION_SENSOR_TYPE == 1) {
     pinMode(VIBRATION_SENSOR_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(VIBRATION_SENSOR_PIN), onVibrationInterrupt, CHANGE);
+    const int interruptMode = VIBRATION_SENSOR_ACTIVE_LEVEL == LOW ? FALLING : RISING;
+    attachInterrupt(digitalPinToInterrupt(VIBRATION_SENSOR_PIN), onVibrationInterrupt, interruptMode);
   } else {
     pinMode(VIBRATION_SENSOR_PIN, INPUT);
   }
@@ -156,7 +158,7 @@ void setupPins() {
   }
 
   Serial.printf("Vibration sensor pin: %d\n", VIBRATION_SENSOR_PIN);
-  Serial.printf("Vibration sensor mode: %s\n", VIBRATION_SENSOR_TYPE == 1 ? "digital active-low" : "analog threshold");
+  Serial.printf("Vibration sensor mode: %s\n", VIBRATION_SENSOR_TYPE == 1 ? "digital active-edge" : "analog threshold");
   Serial.printf("Vibration trigger samples: %d\n", VIBRATION_TRIGGER_SAMPLES);
   Serial.printf("Vibration release samples: %d\n", VIBRATION_RELEASE_SAMPLES);
   Serial.printf("Bubble trigger relay pin: %d\n", PILLOW_BUBBLE_RELAY_PIN);
@@ -256,7 +258,9 @@ void checkVibration() {
 
   // Detect vibration
   if (triggerReady && !vibrationDetected) {
-    if (currentTime - lastVibrationTime >= VIBRATION_DEBOUNCE_MS) {
+    const bool retriggerReady = lastVibrationTime == 0 ||
+                                currentTime - lastVibrationTime >= VIBRATION_RETRIGGER_LOCKOUT_MS;
+    if (retriggerReady && currentTime - lastVibrationTime >= VIBRATION_DEBOUNCE_MS) {
       vibrationDetected = true;
       lastVibrationTime = currentTime;
       Serial.printf("EVENT=VIBRATION_DETECTED value=%d\n", sensorValue);

@@ -30,6 +30,7 @@
 #define LIGHT_FLOW_STEP_MS 90
 #define LIGHT_FLOW_OFFSET 96
 #define LIGHT_SMOOTH_TARGET_PERCENT 6
+#define LIGHT_SATURATION_PERCENT 65
 
 // Keep EEG automatic linkage scoped to lights. Stepper remains available for manual bench tuning only.
 #define DREAM_ENABLE_EEG_STEPPER_AUTO 0
@@ -38,6 +39,13 @@
 // Stepper output is enabled for bench tuning. Relay outputs drive the fogger and fan boards.
 #define DREAM_ENABLE_STEPPER_OUTPUT 1
 #define DREAM_ENABLE_RELAY_OUTPUT 1
+
+#define BUBBLE_DEFAULT_FOG_START_AT_MS 1000
+#define BUBBLE_DEFAULT_FAN_LIGHT_START_AT_MS 5000
+#define BUBBLE_DEFAULT_FORWARD_START_AT_MS 9000
+#define BUBBLE_DEFAULT_FOG_STOP_AT_MS 12700
+#define BUBBLE_DEFAULT_FAN_STOP_AT_MS 13700
+#define BUBBLE_DEFAULT_LIGHT_STOP_AT_MS 16700
 
 #if DREAM_ENABLE_STEPPER_OUTPUT
 #define STEPPER_STEP_PIN 25
@@ -62,12 +70,15 @@
 #define FOG_RELAY_PIN 26
 #define FAN_RELAY_PIN 27
 #define RELAY_ACTIVE_LEVEL HIGH
-#define BUBBLE_FOG_LEAD_MS 1000
-#define BUBBLE_BLOW_MS 4000
-#define BUBBLE_FAN_TAIL_MS 1000
 #endif
 
-#define BUBBLE_STEPPER_STEPS 1600
+#if DREAM_ENABLE_STEPPER_OUTPUT
+#define BUBBLE_DEFAULT_FORWARD_STEPS STEPPER_STEPS_PER_REV
+#define BUBBLE_DEFAULT_REVERSE_STEPS STEPPER_STEPS_PER_REV
+#else
+#define BUBBLE_DEFAULT_FORWARD_STEPS 1600
+#define BUBBLE_DEFAULT_REVERSE_STEPS 1600
+#endif
 
 const uint8_t BROADCAST_MAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 const uint8_t EEG_NOT_WORN_SIGNALS[] = {0x1D, 0x36, 0x37, 0x38, 0x50, 0x51, 0x52, 0x6B, 0xC8};
@@ -112,9 +123,19 @@ enum DreamRelayState : uint8_t {
 
 enum DreamBubbleState : uint8_t {
   BUBBLE_IDLE,
-  BUBBLE_FOGGING,
-  BUBBLE_BLOWING,
-  BUBBLE_FINISHING,
+  BUBBLE_REVERSE_PULL,
+  BUBBLE_FOG_ON,
+  BUBBLE_BLOW_OUT,
+  BUBBLE_FORWARD_RESET,
+  BUBBLE_FOG_HOLD,
+  BUBBLE_WIND_DOWN,
+  BUBBLE_LIGHT_HOLD,
+};
+
+enum DreamBubbleStepperPhase : uint8_t {
+  BUBBLE_STEPPER_NONE,
+  BUBBLE_STEPPER_REVERSE,
+  BUBBLE_STEPPER_FORWARD,
 };
 
 enum DreamSafetyState : uint8_t {
@@ -141,6 +162,7 @@ enum DreamControlAction : uint8_t {
   CONTROL_FAN_ON,
   CONTROL_FAN_OFF,
   CONTROL_BUBBLE_TRIGGER,
+  CONTROL_BUBBLE_CONFIG,
 };
 
 struct __attribute__((packed)) DreamEegEspNowPacket {
@@ -216,7 +238,22 @@ struct __attribute__((packed)) DreamControlEspNowPacket {
   uint16_t arg2;
   uint16_t arg3;
   uint16_t arg4;
+  uint16_t arg5;
+  uint16_t arg6;
+  uint16_t arg7;
+  uint16_t arg8;
   uint16_t checksum;
+};
+
+struct BubbleFlowConfig {
+  uint16_t reverseSteps;
+  uint16_t fogStartAtMs;
+  uint16_t fanLightStartAtMs;
+  uint16_t forwardStartAtMs;
+  uint16_t forwardSteps;
+  uint16_t fogStopAtMs;
+  uint16_t fanStopAtMs;
+  uint16_t lightStopAtMs;
 };
 
 struct RgbwColor {
@@ -273,8 +310,25 @@ bool autoLightReleased = false;
 RgbwColor manualLightColor = {};
 uint32_t bubbleStateStartMs = 0;
 uint32_t bubbleStartMs = 0;
+uint32_t bubbleFogStartMs = 0;
+uint32_t bubbleFanStartMs = 0;
+uint32_t bubbleForwardStartMs = 0;
+uint32_t bubbleForwardDoneMs = 0;
+uint32_t bubbleFogStopMs = 0;
+uint32_t bubbleReverseDoneMs = 0;
 uint32_t bubbleTriggerCount = 0;
-bool bubbleStepperStarted = false;
+bool bubbleStepperMoving = false;
+uint8_t bubbleStepperPhase = BUBBLE_STEPPER_NONE;
+BubbleFlowConfig bubbleConfig = {
+  BUBBLE_DEFAULT_REVERSE_STEPS,
+  BUBBLE_DEFAULT_FOG_START_AT_MS,
+  BUBBLE_DEFAULT_FAN_LIGHT_START_AT_MS,
+  BUBBLE_DEFAULT_FORWARD_START_AT_MS,
+  BUBBLE_DEFAULT_FORWARD_STEPS,
+  BUBBLE_DEFAULT_FOG_STOP_AT_MS,
+  BUBBLE_DEFAULT_FAN_STOP_AT_MS,
+  BUBBLE_DEFAULT_LIGHT_STOP_AT_MS,
+};
 
 #if DREAM_ENABLE_RELAY_OUTPUT
 bool manualFogRequested = false;
@@ -312,6 +366,21 @@ uint8_t scalePercentToByte(uint8_t value) {
 
 uint8_t max4(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
   return max(max(a, b), max(c, d));
+}
+
+uint8_t softenSaturationChannel(uint8_t channel, uint8_t peak) {
+  return static_cast<uint8_t>(
+    peak - (static_cast<uint16_t>(peak - channel) * LIGHT_SATURATION_PERCENT + 50) / 100);
+}
+
+RgbwColor softenSaturation(const RgbwColor &color) {
+  const uint8_t peak = max(max(color.r, color.g), color.b);
+  return {
+    softenSaturationChannel(color.r, peak),
+    softenSaturationChannel(color.g, peak),
+    softenSaturationChannel(color.b, peak),
+    color.w,
+  };
 }
 
 uint8_t smoothChannel(uint8_t current, uint8_t target) {
@@ -516,8 +585,8 @@ void sendDmxFrame() {
 }
 
 void setTwoLightsImmediate(const RgbwColor &light1, const RgbwColor &light2) {
-  light1Current = light1;
-  light2Current = light2;
+  light1Current = softenSaturation(light1);
+  light2Current = softenSaturation(light2);
   lightLevel = max(max4(light1Current.r, light1Current.g, light1Current.b, light1Current.w),
                    max4(light2Current.r, light2Current.g, light2Current.b, light2Current.w));
   sendDmxFrame();
@@ -592,7 +661,7 @@ bool validateControlPacket(DreamControlEspNowPacket &packet) {
     return false;
   }
 
-  return packet.action > CONTROL_NONE && packet.action <= CONTROL_BUBBLE_TRIGGER;
+  return packet.action > CONTROL_NONE && packet.action <= CONTROL_BUBBLE_CONFIG;
 }
 
 void updateSequenceCounters(uint32_t incomingSeq) {
@@ -660,6 +729,141 @@ uint32_t currentBubbleActiveMs() {
   return bubbleFlowActive() ? millis() - bubbleStartMs : 0;
 }
 
+void setBubbleState(uint8_t nextState, uint32_t now, const char *label) {
+  if (bubbleState == nextState) {
+    return;
+  }
+
+  bubbleState = nextState;
+  bubbleStateStartMs = now;
+  Serial.print("EVENT=BUBBLE_STEP STATE=");
+  Serial.println(label);
+}
+
+void resetBubbleTimelineMarkers() {
+  bubbleFogStartMs = 0;
+  bubbleFanStartMs = 0;
+  bubbleForwardStartMs = 0;
+  bubbleForwardDoneMs = 0;
+  bubbleFogStopMs = 0;
+  bubbleReverseDoneMs = 0;
+}
+
+#if DREAM_ENABLE_STEPPER_OUTPUT
+uint16_t requestedBubbleSteps(uint16_t value) {
+  return static_cast<uint16_t>(constrain(static_cast<int>(value), 0, STEPPER_MAX_COMMAND_STEPS));
+}
+#else
+uint16_t requestedBubbleSteps(uint16_t value) {
+  return value;
+}
+#endif
+
+uint16_t requestedBubbleTimelineMs(uint16_t value) {
+  const uint32_t constrained = constrain(static_cast<uint32_t>(value), static_cast<uint32_t>(0), static_cast<uint32_t>(60000));
+  return static_cast<uint16_t>(((constrained + 50) / 100) * 100);
+}
+
+void applyBubbleConfig(const DreamControlEspNowPacket &packet) {
+  if (bubbleFlowActive()) {
+    Serial.println("EVENT=BUBBLE_CONFIG_IGNORED REASON=BUSY");
+    return;
+  }
+
+  bubbleConfig.reverseSteps = requestedBubbleSteps(packet.arg1);
+  bubbleConfig.fogStartAtMs = requestedBubbleTimelineMs(packet.arg2);
+  bubbleConfig.fanLightStartAtMs = requestedBubbleTimelineMs(packet.arg3);
+  bubbleConfig.forwardStartAtMs = requestedBubbleTimelineMs(packet.arg4);
+  bubbleConfig.forwardSteps = requestedBubbleSteps(packet.arg5);
+  bubbleConfig.fogStopAtMs = requestedBubbleTimelineMs(packet.arg6);
+  bubbleConfig.fanStopAtMs = requestedBubbleTimelineMs(packet.arg7);
+  bubbleConfig.lightStopAtMs = requestedBubbleTimelineMs(packet.arg8);
+
+  Serial.print("EVENT=BUBBLE_CONFIG_APPLIED REVERSE_STEPS=");
+  Serial.print(bubbleConfig.reverseSteps);
+  Serial.print(" FOG_START_AT_MS=");
+  Serial.print(bubbleConfig.fogStartAtMs);
+  Serial.print(" FAN_LIGHT_START_AT_MS=");
+  Serial.print(bubbleConfig.fanLightStartAtMs);
+  Serial.print(" FORWARD_START_AT_MS=");
+  Serial.print(bubbleConfig.forwardStartAtMs);
+  Serial.print(" FORWARD_STEPS=");
+  Serial.print(bubbleConfig.forwardSteps);
+  Serial.print(" FOG_STOP_AT_MS=");
+  Serial.print(bubbleConfig.fogStopAtMs);
+  Serial.print(" FAN_STOP_AT_MS=");
+  Serial.print(bubbleConfig.fanStopAtMs);
+  Serial.print(" LIGHT_STOP_AT_MS=");
+  Serial.println(bubbleConfig.lightStopAtMs);
+}
+
+bool startBubbleStepperMove(uint16_t steps, bool forward, uint8_t phase) {
+#if DREAM_ENABLE_STEPPER_OUTPUT
+  stepperPulseActive = false;
+  digitalWrite(STEPPER_STEP_PIN, HIGH);
+  if (steps == 0) {
+    bubbleStepperMoving = false;
+    bubbleStepperPhase = BUBBLE_STEPPER_NONE;
+    bubbleStepperTargetSteps = stepperPositionSteps;
+    stepperTargetSteps = stepperPositionSteps;
+    return false;
+  }
+
+  const int32_t signedSteps = static_cast<int32_t>(steps);
+  bubbleStepperTargetSteps = clampStepperTarget(stepperPositionSteps + (forward ? signedSteps : -signedSteps));
+  if (bubbleStepperTargetSteps == stepperPositionSteps) {
+    bubbleStepperMoving = false;
+    bubbleStepperPhase = BUBBLE_STEPPER_NONE;
+    stepperTargetSteps = stepperPositionSteps;
+    return false;
+  }
+
+  bubbleStepperMoving = true;
+  bubbleStepperPhase = phase;
+  return true;
+#else
+  (void)steps;
+  (void)forward;
+  (void)phase;
+  bubbleStepperMoving = false;
+  bubbleStepperPhase = BUBBLE_STEPPER_NONE;
+  return false;
+#endif
+}
+
+void abortBubbleFlow(const char *reason) {
+  if (!bubbleFlowActive()) {
+    return;
+  }
+
+  bubbleState = BUBBLE_IDLE;
+  bubbleStateStartMs = millis();
+  resetBubbleTimelineMarkers();
+  bubbleStepperMoving = false;
+  bubbleStepperPhase = BUBBLE_STEPPER_NONE;
+#if DREAM_ENABLE_STEPPER_OUTPUT
+  stepperTargetSteps = stepperPositionSteps;
+  bubbleStepperTargetSteps = stepperPositionSteps;
+  stepperPulseActive = false;
+  digitalWrite(STEPPER_STEP_PIN, HIGH);
+#endif
+  Serial.print("EVENT=BUBBLE_ABORTED REASON=");
+  Serial.println(reason);
+}
+
+void startBubbleForwardReset(uint32_t now) {
+  if (bubbleForwardStartMs != 0) {
+    return;
+  }
+
+  bubbleForwardStartMs = now;
+  const bool moving = startBubbleStepperMove(bubbleConfig.forwardSteps, true, BUBBLE_STEPPER_FORWARD);
+  if (!moving) {
+    bubbleForwardDoneMs = now;
+  }
+  setBubbleState(BUBBLE_FORWARD_RESET, now, "FORWARD_RESET");
+}
+
 void startBubbleFlow(const char *source) {
   if (!systemEnabled) {
     Serial.print("EVENT=BUBBLE_TRIGGER_IGNORED REASON=SYSTEM_OFF SOURCE=");
@@ -673,22 +877,116 @@ void startBubbleFlow(const char *source) {
   }
 
   const uint32_t now = millis();
-  bubbleState = BUBBLE_FOGGING;
+  bubbleState = BUBBLE_REVERSE_PULL;
   bubbleStateStartMs = now;
   bubbleStartMs = now;
+  resetBubbleTimelineMarkers();
   bubbleTriggerCount++;
   autoLightReleased = false;
-  bubbleStepperStarted = false;
+  bubbleStepperMoving = false;
+  bubbleStepperPhase = BUBBLE_STEPPER_NONE;
 #if DREAM_ENABLE_STEPPER_OUTPUT
   manualStepperActive = false;
   manualStepperMask = 0;
-  bubbleStepperTargetSteps = clampStepperTarget(stepperPositionSteps + BUBBLE_STEPPER_STEPS);
 #endif
+  if (!startBubbleStepperMove(bubbleConfig.reverseSteps, false, BUBBLE_STEPPER_REVERSE)) {
+    bubbleReverseDoneMs = now;
+  }
 
   Serial.print("EVENT=BUBBLE_TRIGGERED SOURCE=");
   Serial.print(source);
   Serial.print(" COUNT=");
-  Serial.println(bubbleTriggerCount);
+  Serial.print(bubbleTriggerCount);
+  Serial.print(" REVERSE_STEPS=");
+  Serial.print(bubbleConfig.reverseSteps);
+  Serial.print(" FOG_START_AT_MS=");
+  Serial.print(bubbleConfig.fogStartAtMs);
+  Serial.print(" FAN_LIGHT_START_AT_MS=");
+  Serial.print(bubbleConfig.fanLightStartAtMs);
+  Serial.print(" FORWARD_START_AT_MS=");
+  Serial.print(bubbleConfig.forwardStartAtMs);
+  Serial.print(" FORWARD_STEPS=");
+  Serial.print(bubbleConfig.forwardSteps);
+  Serial.print(" FOG_STOP_AT_MS=");
+  Serial.print(bubbleConfig.fogStopAtMs);
+  Serial.print(" FAN_STOP_AT_MS=");
+  Serial.print(bubbleConfig.fanStopAtMs);
+  Serial.print(" LIGHT_STOP_AT_MS=");
+  Serial.println(bubbleConfig.lightStopAtMs);
+}
+
+bool bubbleTimelineOutputActive(uint32_t now, uint16_t startAtMs, uint16_t stopAtMs) {
+  if (!bubbleFlowActive()) {
+    return false;
+  }
+  const uint32_t activeMs = now - bubbleStartMs;
+  return activeMs >= startAtMs && activeMs < stopAtMs;
+}
+
+bool bubbleFogOutputActive(uint32_t now) {
+  return bubbleTimelineOutputActive(now, bubbleConfig.fogStartAtMs, bubbleConfig.fogStopAtMs);
+}
+
+bool bubbleFanOutputActive(uint32_t now) {
+  return bubbleTimelineOutputActive(now, bubbleConfig.fanLightStartAtMs, bubbleConfig.fanStopAtMs);
+}
+
+bool bubbleLightOutputActive(uint32_t now) {
+  return bubbleTimelineOutputActive(now, bubbleConfig.fanLightStartAtMs, bubbleConfig.lightStopAtMs);
+}
+
+void updateBubbleTimeline() {
+  if (!bubbleFlowActive()) {
+    return;
+  }
+
+  const uint32_t now = millis();
+  const uint32_t activeMs = now - bubbleStartMs;
+
+  if (bubbleFogStartMs == 0 && activeMs >= bubbleConfig.fogStartAtMs) {
+    bubbleFogStartMs = now;
+    setBubbleState(BUBBLE_FOG_ON, now, "FOG_ON");
+  }
+
+  if (bubbleFanStartMs == 0 && activeMs >= bubbleConfig.fanLightStartAtMs) {
+    bubbleFanStartMs = now;
+    setBubbleState(BUBBLE_BLOW_OUT, now, "FAN_LIGHT_ON");
+  }
+
+  if (bubbleForwardStartMs == 0 &&
+      activeMs >= bubbleConfig.forwardStartAtMs &&
+      !bubbleStepperMoving) {
+    startBubbleForwardReset(now);
+  }
+
+  if (bubbleFogStopMs == 0 && activeMs >= bubbleConfig.fogStopAtMs) {
+    bubbleFogStopMs = now;
+    setBubbleState(BUBBLE_WIND_DOWN, now, "FOG_OFF");
+  }
+
+  if (bubbleForwardDoneMs != 0) {
+    if (bubbleState == BUBBLE_FORWARD_RESET) {
+      setBubbleState(BUBBLE_FOG_HOLD, now, "FOG_HOLD");
+    }
+  }
+
+  const bool fogDone = activeMs >= bubbleConfig.fogStopAtMs;
+  const bool fanDone = activeMs >= bubbleConfig.fanStopAtMs;
+  const bool lightDone = activeMs >= bubbleConfig.lightStopAtMs;
+
+  if (fanDone && !lightDone) {
+    setBubbleState(BUBBLE_LIGHT_HOLD, now, "LIGHT_HOLD");
+  }
+
+  if (bubbleForwardStartMs != 0 && fogDone && fanDone && lightDone && !bubbleStepperMoving) {
+    bubbleState = BUBBLE_IDLE;
+    bubbleStateStartMs = now;
+    bubbleStepperMoving = false;
+    bubbleStepperPhase = BUBBLE_STEPPER_NONE;
+    autoLightReleased = true;
+    Serial.print("EVENT=BUBBLE_DONE ACTIVE_MS=");
+    Serial.println(now - bubbleStartMs);
+  }
 }
 
 bool isDuplicateControlPacket(const DreamControlEspNowPacket &packet) {
@@ -730,6 +1028,14 @@ void applyControlPacket(const DreamControlEspNowPacket &packet, const uint8_t *m
   Serial.print(packet.arg3);
   Serial.print(" ARG4=");
   Serial.print(packet.arg4);
+  Serial.print(" ARG5=");
+  Serial.print(packet.arg5);
+  Serial.print(" ARG6=");
+  Serial.print(packet.arg6);
+  Serial.print(" ARG7=");
+  Serial.print(packet.arg7);
+  Serial.print(" ARG8=");
+  Serial.print(packet.arg8);
   Serial.print(" SRC=");
   if (macAddress != nullptr) {
     printMacAddress(macAddress);
@@ -760,6 +1066,7 @@ void applyControlPacket(const DreamControlEspNowPacket &packet, const uint8_t *m
       break;
     case CONTROL_SYSTEM_DISABLE:
       systemEnabled = false;
+      abortBubbleFlow("SYSTEM_DISABLE");
       manualLightEnabled = false;
       manualLightColor = {0, 0, 0, 0};
       autoLightReleased = false;
@@ -827,6 +1134,9 @@ void applyControlPacket(const DreamControlEspNowPacket &packet, const uint8_t *m
       break;
     case CONTROL_BUBBLE_TRIGGER:
       startBubbleFlow("CONTROL");
+      break;
+    case CONTROL_BUBBLE_CONFIG:
+      applyBubbleConfig(packet);
       break;
     case CONTROL_STEPPER_FORWARD:
 #if DREAM_ENABLE_STEPPER_OUTPUT
@@ -901,6 +1211,7 @@ void applyControlPacket(const DreamControlEspNowPacket &packet, const uint8_t *m
       break;
     case CONTROL_ALL_STOP:
       systemEnabled = false;
+      abortBubbleFlow("ALL_STOP");
       manualLightEnabled = false;
       manualLightColor = {0, 0, 0, 0};
       autoLightReleased = false;
@@ -1096,6 +1407,32 @@ void updateLightTargets() {
     return;
   }
 
+  if (manualLightEnabled && isColorOff(manualLightColor)) {
+    lightMode = LIGHT_OFF;
+    light1Target = {0, 0, 0, 0};
+    light2Target = {0, 0, 0, 0};
+    return;
+  }
+
+  if (bubbleFlowActive()) {
+    const uint32_t now = millis();
+    if (!bubbleLightOutputActive(now)) {
+      lightMode = LIGHT_OFF;
+      light1Target = {0, 0, 0, 0};
+      light2Target = {0, 0, 0, 0};
+      return;
+    }
+
+    if (isColorOff(manualLightColor)) {
+      lightMode = LIGHT_IDLE;
+      setBluePurpleFlowTargets(255);
+    } else {
+      lightMode = LIGHT_MANUAL;
+      setManualGradientTargets();
+    }
+    return;
+  }
+
   if (manualLightEnabled) {
     lightMode = LIGHT_MANUAL;
     if (isColorOff(manualLightColor)) {
@@ -1107,7 +1444,7 @@ void updateLightTargets() {
     return;
   }
 
-  if (bubbleFlowActive() || !autoLightReleased) {
+  if (!autoLightReleased) {
     lightMode = LIGHT_OFF;
     light1Target = {0, 0, 0, 0};
     light2Target = {0, 0, 0, 0};
@@ -1137,6 +1474,8 @@ void updateLightTargets() {
 
 void updateLightController() {
   updateLightTargets();
+  light1Target = softenSaturation(light1Target);
+  light2Target = softenSaturation(light2Target);
 
   const uint32_t now = millis();
   if (now - lastDmxRefreshMs < DMX_REFRESH_MS) {
@@ -1229,7 +1568,7 @@ void updateStepperController() {
       digitalWrite(STEPPER_ENABLE_PIN, STEPPER_ENABLE_ACTIVE_LEVEL);
     }
 
-    if (bubbleState != BUBBLE_BLOWING || !bubbleStepperStarted) {
+    if (!bubbleStepperMoving) {
       stepperTargetSteps = stepperPositionSteps;
       stepperPulseActive = false;
       writeStepperStepPin(STEPPER_TARGET_SINGLE, HIGH);
@@ -1247,6 +1586,16 @@ void updateStepperController() {
                                             stepperPulseActive,
                                             nowUs);
     if (!moving) {
+      const uint32_t now = millis();
+      if (bubbleStepperPhase == BUBBLE_STEPPER_REVERSE && bubbleReverseDoneMs == 0) {
+        bubbleReverseDoneMs = now;
+        Serial.println("EVENT=BUBBLE_STEPPER_DONE PHASE=REVERSE");
+      } else if (bubbleStepperPhase == BUBBLE_STEPPER_FORWARD && bubbleForwardDoneMs == 0) {
+        bubbleForwardDoneMs = now;
+        Serial.println("EVENT=BUBBLE_STEPPER_DONE PHASE=FORWARD");
+      }
+      bubbleStepperMoving = false;
+      bubbleStepperPhase = BUBBLE_STEPPER_NONE;
       stepperState = STEPPER_IDLE;
     }
     return;
@@ -1313,48 +1662,10 @@ void updateStepperController() {
 void updateRelayController() {
 #if DREAM_ENABLE_RELAY_OUTPUT
   const uint32_t now = millis();
-  bool bubbleFogOn = false;
-  bool bubbleFanOn = false;
-
-  switch (bubbleState) {
-    case BUBBLE_IDLE:
-      break;
-    case BUBBLE_FOGGING:
-      bubbleFogOn = true;
-      if (now - bubbleStateStartMs >= BUBBLE_FOG_LEAD_MS) {
-        bubbleState = BUBBLE_BLOWING;
-        bubbleStateStartMs = now;
-        bubbleStepperStarted = true;
-#if DREAM_ENABLE_STEPPER_OUTPUT
-        bubbleStepperTargetSteps = clampStepperTarget(stepperPositionSteps + BUBBLE_STEPPER_STEPS);
-#endif
-      }
-      break;
-    case BUBBLE_BLOWING:
-      bubbleFogOn = true;
-      bubbleFanOn = true;
-      if (now - bubbleStateStartMs >= BUBBLE_BLOW_MS) {
-        bubbleState = BUBBLE_FINISHING;
-        bubbleStateStartMs = now;
-      }
-      break;
-    case BUBBLE_FINISHING:
-      bubbleFanOn = true;
-      if (now - bubbleStateStartMs >= BUBBLE_FAN_TAIL_MS) {
-        bubbleState = BUBBLE_IDLE;
-        bubbleStateStartMs = now;
-        bubbleStepperStarted = false;
-        autoLightReleased = true;
-        Serial.print("EVENT=BUBBLE_DONE ACTIVE_MS=");
-        Serial.println(now - bubbleStartMs);
-      }
-      break;
-  }
-
   const bool bubbleActive = bubbleFlowActive();
   const bool manualOutputsAllowed = systemEnabled && !bubbleActive;
-  const bool fogOn = bubbleFogOn || (manualOutputsAllowed && manualFogRequested);
-  const bool fanOn = bubbleFanOn || (manualOutputsAllowed && manualFanRequested);
+  const bool fogOn = bubbleFogOutputActive(now) || (manualOutputsAllowed && manualFogRequested);
+  const bool fanOn = bubbleFanOutputActive(now) || (manualOutputsAllowed && manualFanRequested);
 
   digitalWrite(FOG_RELAY_PIN, fogOn ? RELAY_ACTIVE_LEVEL : !RELAY_ACTIVE_LEVEL);
   digitalWrite(FAN_RELAY_PIN, fanOn ? RELAY_ACTIVE_LEVEL : !RELAY_ACTIVE_LEVEL);
@@ -1522,8 +1833,9 @@ void setup() {
 
 void loop() {
   updateSafetyState();
-  updateRelayController();
   updateStepperController();
+  updateBubbleTimeline();
+  updateRelayController();
   updateLightController();
 
   const uint32_t now = millis();

@@ -11,13 +11,20 @@ const int DMX_LIGHT_1_ADDRESS = 1;
 const int DMX_LIGHT_2_ADDRESS = 5;
 const int FLOW_STEP_MS = 35;
 const byte FLOW_OFFSET = 96;
+const byte LIGHT_SATURATION_PERCENT = 65;
 
 byte dmxData[DMX_PACKET_SIZE];
 
+byte softenSaturationChannel(byte channel, byte peak) {
+  return static_cast<byte>(
+    peak - (static_cast<uint16_t>(peak - channel) * LIGHT_SATURATION_PERCENT + 50) / 100);
+}
+
 void setLightColor(int startAddress, byte r, byte g, byte b, byte w) {
-  dmxData[startAddress] = r;
-  dmxData[startAddress + 1] = g;
-  dmxData[startAddress + 2] = b;
+  const byte peak = max(max(r, g), b);
+  dmxData[startAddress] = softenSaturationChannel(r, peak);
+  dmxData[startAddress + 1] = softenSaturationChannel(g, peak);
+  dmxData[startAddress + 2] = softenSaturationChannel(b, peak);
   dmxData[startAddress + 3] = w;
 }
 

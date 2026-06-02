@@ -34,6 +34,7 @@ Microduino Core ESP32
 
 | 文档 | 用途 |
 | --- | --- |
+| [Dream观众体验说明](Dream综合操作说明.md) | 面向观众展示的体验说明、注意事项和工作人员口播文案 |
 | [Dream电脑端与前端使用说明](Dream电脑端与前端使用说明.md) | 运行脑电桥接脚本、打开浏览器前端、发送控制指令 |
 | [Dream板卡固件烧录使用说明](Dream板卡固件烧录使用说明.md) | 编译、上传 M5Stack 和 Microduino 固件 |
 | [DreamM5Stack屏幕界面说明](DreamM5Stack屏幕界面说明.md) | 解释 M5Stack 屏幕字段、按键和现场读屏判断 |

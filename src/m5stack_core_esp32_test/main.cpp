@@ -21,6 +21,14 @@
 #define PRESSURE_SENSOR_PIN -1
 #define PRESSURE_SENSOR_ACTIVE_LEVEL HIGH
 #define PRESSURE_SENSOR_DEBOUNCE_MS 50
+#define BUBBLE_DEFAULT_REVERSE_STEPS 1600
+#define BUBBLE_DEFAULT_FOG_START_AT_MS 1000
+#define BUBBLE_DEFAULT_FAN_LIGHT_START_AT_MS 5000
+#define BUBBLE_DEFAULT_FORWARD_START_AT_MS 9000
+#define BUBBLE_DEFAULT_FORWARD_STEPS 1600
+#define BUBBLE_DEFAULT_FOG_STOP_AT_MS 12700
+#define BUBBLE_DEFAULT_FAN_STOP_AT_MS 13700
+#define BUBBLE_DEFAULT_LIGHT_STOP_AT_MS 16700
 
 const uint8_t BROADCAST_MAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -65,9 +73,13 @@ enum DreamRelayState : uint8_t {
 
 enum DreamBubbleState : uint8_t {
   BUBBLE_IDLE,
-  BUBBLE_FOGGING,
-  BUBBLE_BLOWING,
-  BUBBLE_FINISHING,
+  BUBBLE_REVERSE_PULL,
+  BUBBLE_FOG_ON,
+  BUBBLE_BLOW_OUT,
+  BUBBLE_FORWARD_RESET,
+  BUBBLE_FOG_HOLD,
+  BUBBLE_WIND_DOWN,
+  BUBBLE_LIGHT_HOLD,
 };
 
 enum DreamSafetyState : uint8_t {
@@ -94,6 +106,9 @@ enum DreamControlAction : uint8_t {
   CONTROL_FAN_ON,
   CONTROL_FAN_OFF,
   CONTROL_BUBBLE_TRIGGER,
+  CONTROL_BUBBLE_CONFIG,
+  CONTROL_VIBRATION_ENABLE,
+  CONTROL_VIBRATION_DISABLE,
 };
 
 struct __attribute__((packed)) DreamEegEspNowPacket {
@@ -169,6 +184,10 @@ struct __attribute__((packed)) DreamControlEspNowPacket {
   uint16_t arg2;
   uint16_t arg3;
   uint16_t arg4;
+  uint16_t arg5;
+  uint16_t arg6;
+  uint16_t arg7;
+  uint16_t arg8;
   uint16_t checksum;
 };
 
@@ -187,6 +206,7 @@ struct __attribute__((packed)) DreamVibrationStatusPacket {
 DreamEegEspNowPacket latestEegPacket = {};
 DreamMicStatusPacket latestMicStatus = {};
 DreamVibrationStatusPacket latestVibrationStatus = {};
+DreamControlEspNowPacket latestBubbleConfigPacket = {};
 
 char serialLine[SERIAL_LINE_BUFFER_SIZE] = {};
 uint8_t serialLineIndex = 0;
@@ -207,6 +227,7 @@ bool espNowReady = false;
 bool haveEeg = false;
 bool haveMicStatus = false;
 bool haveVibrationStatus = false;
+bool haveBubbleConfigPacket = false;
 bool pressurePressed = false;
 bool pressureStablePressed = false;
 bool pressureLastRawPressed = false;
@@ -217,6 +238,7 @@ uint32_t lastVibrationStatusMs = 0;
 uint32_t vibrationTriggerCount = 0;
 bool lastVibrationDetected = false;
 bool vibrationTriggerPending = false;
+bool vibrationInputEnabled = true;
 uint32_t vibrationLastTriggerMs = 0;
 esp_now_send_status_t lastSendStatus = ESP_NOW_SEND_FAIL;
 
@@ -271,9 +293,13 @@ const char *relayStateName(uint8_t value) {
 const char *bubbleStateName(uint8_t value) {
   switch (value) {
     case BUBBLE_IDLE: return "IDLE";
-    case BUBBLE_FOGGING: return "FOG";
-    case BUBBLE_BLOWING: return "BLOW";
-    case BUBBLE_FINISHING: return "TAIL";
+    case BUBBLE_REVERSE_PULL: return "REV";
+    case BUBBLE_FOG_ON: return "FOG";
+    case BUBBLE_BLOW_OUT: return "BLOW";
+    case BUBBLE_FORWARD_RESET: return "FWD";
+    case BUBBLE_FOG_HOLD: return "FOG_HOLD";
+    case BUBBLE_WIND_DOWN: return "WIND";
+    case BUBBLE_LIGHT_HOLD: return "LIGHT";
     default: return "?";
   }
 }
@@ -399,6 +425,15 @@ uint8_t controlActionFromName(const char *actionName) {
   if (strcmp(actionName, "BUBBLE_TRIGGER") == 0) {
     return CONTROL_BUBBLE_TRIGGER;
   }
+  if (strcmp(actionName, "BUBBLE_CONFIG") == 0) {
+    return CONTROL_BUBBLE_CONFIG;
+  }
+  if (strcmp(actionName, "VIBRATION_ENABLE") == 0) {
+    return CONTROL_VIBRATION_ENABLE;
+  }
+  if (strcmp(actionName, "VIBRATION_DISABLE") == 0) {
+    return CONTROL_VIBRATION_DISABLE;
+  }
   return CONTROL_NONE;
 }
 
@@ -447,7 +482,7 @@ bool parseControlLine(char *line, DreamControlEspNowPacket &packet) {
   uint32_t seq = 0;
   uint32_t pcTimeMs = 0;
   char actionName[28] = {};
-  uint32_t args[4] = {};
+  uint32_t args[8] = {};
 
   if (!readCsvNumber(cursor, seq) ||
       !readCsvNumber(cursor, pcTimeMs) ||
@@ -460,7 +495,7 @@ bool parseControlLine(char *line, DreamControlEspNowPacket &packet) {
     return false;
   }
 
-  for (uint8_t i = 0; i < 4; i++) {
+  for (uint8_t i = 0; i < 8; i++) {
     if (!readCsvNumber(cursor, args[i])) {
       args[i] = 0;
     }
@@ -478,6 +513,10 @@ bool parseControlLine(char *line, DreamControlEspNowPacket &packet) {
   packet.arg2 = static_cast<uint16_t>(constrain(static_cast<int>(args[1]), 0, 65535));
   packet.arg3 = static_cast<uint16_t>(constrain(static_cast<int>(args[2]), 0, 65535));
   packet.arg4 = static_cast<uint16_t>(constrain(static_cast<int>(args[3]), 0, 65535));
+  packet.arg5 = static_cast<uint16_t>(constrain(static_cast<int>(args[4]), 0, 65535));
+  packet.arg6 = static_cast<uint16_t>(constrain(static_cast<int>(args[5]), 0, 65535));
+  packet.arg7 = static_cast<uint16_t>(constrain(static_cast<int>(args[6]), 0, 65535));
+  packet.arg8 = static_cast<uint16_t>(constrain(static_cast<int>(args[7]), 0, 65535));
   packet.checksum = calculatePacketChecksum(packet);
   return true;
 }
@@ -548,7 +587,15 @@ void sendControlToMicroduino(DreamControlEspNowPacket &packet) {
   }
 }
 
-void sendLocalControl(uint8_t action, uint16_t arg1 = 0, uint16_t arg2 = 0, uint16_t arg3 = 0, uint16_t arg4 = 0) {
+void sendLocalControl(uint8_t action,
+                      uint16_t arg1 = 0,
+                      uint16_t arg2 = 0,
+                      uint16_t arg3 = 0,
+                      uint16_t arg4 = 0,
+                      uint16_t arg5 = 0,
+                      uint16_t arg6 = 0,
+                      uint16_t arg7 = 0,
+                      uint16_t arg8 = 0) {
   DreamControlEspNowPacket packet = {};
   packet.magic = DREAM_PACKET_MAGIC;
   packet.version = DREAM_PROTOCOL_VERSION;
@@ -561,8 +608,89 @@ void sendLocalControl(uint8_t action, uint16_t arg1 = 0, uint16_t arg2 = 0, uint
   packet.arg2 = arg2;
   packet.arg3 = arg3;
   packet.arg4 = arg4;
+  packet.arg5 = arg5;
+  packet.arg6 = arg6;
+  packet.arg7 = arg7;
+  packet.arg8 = arg8;
   packet.checksum = calculatePacketChecksum(packet);
   controlRxCount++;
+  sendControlToMicroduino(packet);
+}
+
+void setBubbleConfigPacket(DreamControlEspNowPacket &packet,
+                           uint16_t reverseSteps,
+                           uint16_t fogStartAtMs,
+                           uint16_t fanLightStartAtMs,
+                           uint16_t forwardStartAtMs,
+                           uint16_t forwardSteps,
+                           uint16_t fogStopAtMs,
+                           uint16_t fanStopAtMs,
+                           uint16_t lightStopAtMs) {
+  memset(&packet, 0, sizeof(packet));
+  packet.magic = DREAM_PACKET_MAGIC;
+  packet.version = DREAM_PROTOCOL_VERSION;
+  packet.type = DREAM_PACKET_CONTROL;
+  packet.action = CONTROL_BUBBLE_CONFIG;
+  packet.arg1 = reverseSteps;
+  packet.arg2 = fogStartAtMs;
+  packet.arg3 = fanLightStartAtMs;
+  packet.arg4 = forwardStartAtMs;
+  packet.arg5 = forwardSteps;
+  packet.arg6 = fogStopAtMs;
+  packet.arg7 = fanStopAtMs;
+  packet.arg8 = lightStopAtMs;
+  packet.checksum = calculatePacketChecksum(packet);
+}
+
+void cacheDefaultBubbleConfig() {
+  setBubbleConfigPacket(latestBubbleConfigPacket,
+                        BUBBLE_DEFAULT_REVERSE_STEPS,
+                        BUBBLE_DEFAULT_FOG_START_AT_MS,
+                        BUBBLE_DEFAULT_FAN_LIGHT_START_AT_MS,
+                        BUBBLE_DEFAULT_FORWARD_START_AT_MS,
+                        BUBBLE_DEFAULT_FORWARD_STEPS,
+                        BUBBLE_DEFAULT_FOG_STOP_AT_MS,
+                        BUBBLE_DEFAULT_FAN_STOP_AT_MS,
+                        BUBBLE_DEFAULT_LIGHT_STOP_AT_MS);
+  haveBubbleConfigPacket = true;
+  Serial.print("EVENT=BUBBLE_CONFIG_CACHED SOURCE=DEFAULT REVERSE_STEPS=");
+  Serial.print(latestBubbleConfigPacket.arg1);
+  Serial.print(" FORWARD_STEPS=");
+  Serial.println(latestBubbleConfigPacket.arg5);
+}
+
+void rememberBubbleConfig(const DreamControlEspNowPacket &packet) {
+  latestBubbleConfigPacket = packet;
+  haveBubbleConfigPacket = true;
+  Serial.print("EVENT=BUBBLE_CONFIG_CACHED SEQ=");
+  Serial.print(packet.seq);
+  Serial.print(" REVERSE_STEPS=");
+  Serial.print(packet.arg1);
+  Serial.print(" FORWARD_STEPS=");
+  Serial.println(packet.arg5);
+}
+
+void replayBubbleConfigForInput(const char *source) {
+  if (!haveBubbleConfigPacket) {
+    Serial.print("EVENT=BUBBLE_CONFIG_REPLAY_SKIPPED SOURCE=");
+    Serial.print(source);
+    Serial.println(" REASON=NO_SAVED_CONFIG");
+    return;
+  }
+
+  DreamControlEspNowPacket packet = latestBubbleConfigPacket;
+  packet.seq = localControlSeq++;
+  packet.pcTimeMs = millis();
+  packet.m5UptimeMs = millis();
+  packet.checksum = 0;
+  Serial.print("EVENT=BUBBLE_CONFIG_REPLAY SOURCE=");
+  Serial.print(source);
+  Serial.print(" SEQ=");
+  Serial.print(packet.seq);
+  Serial.print(" REVERSE_STEPS=");
+  Serial.print(packet.arg1);
+  Serial.print(" FORWARD_STEPS=");
+  Serial.println(packet.arg5);
   sendControlToMicroduino(packet);
 }
 
@@ -592,6 +720,7 @@ void triggerBubbleFromInput(const char *source) {
 
   pressureTriggerCount++;
   pressureLastTriggerMs = now;
+  replayBubbleConfigForInput(source);
   sendLocalControl(CONTROL_BUBBLE_TRIGGER);
   Serial.print("EVENT=BUBBLE_TRIGGER SOURCE=");
   Serial.print(source);
@@ -650,7 +779,30 @@ void handleVibrationTrigger() {
   }
 
   vibrationTriggerPending = false;
+  if (!vibrationInputEnabled) {
+    Serial.println("EVENT=VIBRATION_TRIGGER_IGNORED REASON=DISABLED");
+    return;
+  }
+
   triggerBubbleFromInput("ESP32S3_VIBRATION");
+}
+
+bool applyLocalControl(const DreamControlEspNowPacket &packet) {
+  if (packet.action == CONTROL_VIBRATION_ENABLE) {
+    vibrationInputEnabled = true;
+    vibrationTriggerPending = false;
+    Serial.println("EVENT=LOCAL_CONTROL ACTION=VIBRATION_ENABLE");
+    return true;
+  }
+
+  if (packet.action == CONTROL_VIBRATION_DISABLE) {
+    vibrationInputEnabled = false;
+    vibrationTriggerPending = false;
+    Serial.println("EVENT=LOCAL_CONTROL ACTION=VIBRATION_DISABLE");
+    return true;
+  }
+
+  return false;
 }
 
 void handleButtons() {
@@ -701,6 +853,12 @@ void processSerialLine() {
     Serial.print(controlPacket.seq);
     Serial.print(" ACTION=");
     Serial.println(controlPacket.action);
+    if (applyLocalControl(controlPacket)) {
+      return;
+    }
+    if (controlPacket.action == CONTROL_BUBBLE_CONFIG) {
+      rememberBubbleConfig(controlPacket);
+    }
     sendControlToMicroduino(controlPacket);
     return;
   }
@@ -764,9 +922,13 @@ void handleEspNowReceive(const uint8_t *macAddress, const uint8_t *data, int dat
     lastVibrationStatusMs = millis();
     const bool vibrationDetected = packet.vibrationDetected != 0;
     if (vibrationDetected && !lastVibrationDetected) {
-      vibrationTriggerCount++;
-      vibrationTriggerPending = true;
-      vibrationLastTriggerMs = millis();
+      if (vibrationInputEnabled) {
+        vibrationTriggerCount++;
+        vibrationTriggerPending = true;
+        vibrationLastTriggerMs = millis();
+      } else {
+        Serial.println("EVENT=VIBRATION_TRIGGER_IGNORED REASON=DISABLED");
+      }
     }
     lastVibrationDetected = vibrationDetected;
     return;
@@ -1068,6 +1230,8 @@ void printStatus() {
   Serial.print(vibrationTriggerCount);
   Serial.print(" VIB_LAST_MS=");
   Serial.print(vibrationLastMs);
+  Serial.print(" VIB_ENABLED=");
+  Serial.print(vibrationInputEnabled ? 1 : 0);
   Serial.print(" PRESSURE=");
   Serial.print(pressurePressed ? 1 : 0);
   Serial.print(" PRESSURE_TRIGGER_COUNT=");
@@ -1092,6 +1256,7 @@ void setup() {
   Serial.println(DEVICE_ROLE);
   Serial.println("EVENT=SERIAL_READY INPUT=EEG_CSV TARGET=M5STACK");
 
+  cacheDefaultBubbleConfig();
   initPressureSensor();
   initEspNow();
   drawDashboard();

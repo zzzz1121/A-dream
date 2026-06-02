@@ -46,6 +46,9 @@ CONTROL_ACTIONS = {
     "fan_on": "FAN_ON",
     "fan_off": "FAN_OFF",
     "bubble_trigger": "BUBBLE_TRIGGER",
+    "bubble_config": "BUBBLE_CONFIG",
+    "vibration_enable": "VIBRATION_ENABLE",
+    "vibration_disable": "VIBRATION_DISABLE",
 }
 EEG_POWER_FIELDS = (
     "delta",
@@ -399,6 +402,32 @@ INDEX_HTML = r"""<!doctype html>
       gap: 10px;
       align-items: center;
     }
+    .flow-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .flow-field {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 680;
+    }
+    .flow-field span {
+      overflow-wrap: anywhere;
+    }
+    .flow-field small {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.2;
+      font-weight: 600;
+    }
+    .flow-preview {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
     .mood-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -426,6 +455,7 @@ INDEX_HTML = r"""<!doctype html>
       border: 1px solid rgba(32, 33, 31, 0.16);
       border-radius: 8px;
       background: var(--mood);
+      filter: saturate(0.65);
     }
     .mood-button span {
       position: relative;
@@ -504,7 +534,7 @@ INDEX_HTML = r"""<!doctype html>
     @media (max-width: 680px) {
       main, aside { padding: 14px; }
       .hero, .section-head, .control-title { align-items: flex-start; flex-direction: column; }
-      .button-row, .button-row.two, .button-row.single, .control-status, .control-status.single, .device-control-grid, .mood-grid, .metric-grid.three, .metric-grid.four, .freq-grid { grid-template-columns: 1fr; }
+      .button-row, .button-row.two, .button-row.single, .control-status, .control-status.single, .device-control-grid, .flow-grid, .flow-preview, .mood-grid, .metric-grid.three, .metric-grid.four, .freq-grid { grid-template-columns: 1fr; }
       .step-row { grid-template-columns: 1fr; }
     }
   </style>
@@ -522,6 +552,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="status-row"><span>电脑串口</span><span id="sourceStatus" class="pill warn">等待</span></div>
         <div class="status-row"><span>M5Stack</span><span id="m5Status" class="pill warn">等待</span></div>
         <div class="status-row"><span>Microduino</span><span id="micStatus" class="pill warn">等待</span></div>
+        <div class="status-row"><span>震动板</span><span id="vibrationStatus" class="pill warn">等待</span></div>
       </div>
       <div class="status-stack">
         <h3>端口</h3>
@@ -583,6 +614,13 @@ INDEX_HTML = r"""<!doctype html>
               <div class="metric"><div class="label">距上一次</div><div class="value small" id="vibrationLast">--</div><div class="label">震动触发</div></div>
               <div class="metric"><div class="label">泡泡流程</div><div class="value small" id="bubbleState">--</div><div class="label" id="bubbleDetail">--</div></div>
             </div>
+            <div class="control-status single">
+              <div class="control-state"><span>震动触发开关</span><strong id="vibrationMode">--</strong></div>
+            </div>
+            <div class="button-row two">
+              <button class="good" data-action="vibration_enable">启用震动触发</button>
+              <button data-action="vibration_disable">停用震动触发</button>
+            </div>
           </section>
           <section>
             <div class="section-head"><h2>链路统计</h2><span id="m5Age" class="pill neutral">-- ms</span></div>
@@ -602,7 +640,29 @@ INDEX_HTML = r"""<!doctype html>
               <button class="danger" data-action="system_disable">系统关闭</button>
             </div>
             <div class="button-row single">
-              <button class="primary" data-action="bubble_trigger">触发泡泡流程</button>
+              <button class="primary" data-action="bubble_trigger">保存并触发流程</button>
+            </div>
+            <div class="control-block">
+              <div class="control-title"><h2>泡泡并行流程</h2><span id="bubbleConfigSummary" class="pill neutral">默认</span></div>
+              <div class="flow-grid">
+                <label class="flow-field"><span>反拉电机圈数</span><small>触发后立即启动</small><input class="bubble-config-input" id="bubbleReverseTurns" type="number" min="0" max="20" step="0.1" value="1"></label>
+                <label class="flow-field"><span>烟雾开启时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleFogStartSec" type="number" min="0" max="60" step="0.1" value="1.0"></label>
+                <label class="flow-field"><span>风扇/灯光开启时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleFanLightStartSec" type="number" min="0" max="60" step="0.1" value="5.0"></label>
+                <label class="flow-field"><span>回推启动时间 秒</span><small>相对反转开始；会等待反转完成</small><input class="bubble-config-input" id="bubbleForwardStartSec" type="number" min="0" max="60" step="0.1" value="9.0"></label>
+                <label class="flow-field"><span>回推电机圈数</span><small>反拉完成后才会执行</small><input class="bubble-config-input" id="bubbleForwardTurns" type="number" min="0" max="20" step="0.1" value="1"></label>
+                <label class="flow-field"><span>烟雾关闭时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleFogStopSec" type="number" min="0" max="60" step="0.1" value="12.7"></label>
+                <label class="flow-field"><span>风扇关闭时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleFanStopSec" type="number" min="0" max="60" step="0.1" value="13.7"></label>
+                <label class="flow-field"><span>灯光关闭时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleLightStopSec" type="number" min="0" max="60" step="0.1" value="16.7"></label>
+              </div>
+              <div class="flow-preview">
+                <div class="control-state"><span>电机轨道</span><strong id="bubbleMotorTimeline">--</strong></div>
+                <div class="control-state"><span>烟雾轨道</span><strong id="bubbleFogTimeline">--</strong></div>
+                <div class="control-state"><span>风扇轨道</span><strong id="bubbleFanTimeline">--</strong></div>
+                <div class="control-state"><span>灯光轨道</span><strong id="bubbleLightTimeline">--</strong></div>
+              </div>
+              <div class="button-row single">
+                <button data-action="bubble_config">保存并行配置</button>
+              </div>
             </div>
             <div class="control-block">
               <div class="control-title"><h2>灯光状态</h2><span id="lightMood" class="pill neutral">手动</span></div>
@@ -677,9 +737,9 @@ INDEX_HTML = r"""<!doctype html>
     const lightModes = ["OFF", "IDLE", "EEG", "BAD", "TIMEOUT", "MANUAL"];
     const stepperStates = ["DISABLED", "IDLE", "MOVING", "BREATH", "LIMIT", "FAULT"];
     const relayStates = ["OFF", "ARMING", "ON", "COOL", "FAULT"];
-    const bubbleStates = ["IDLE", "FOG", "BLOW", "TAIL"];
+    const bubbleStates = ["IDLE", "REV", "FOG", "BLOW", "FWD", "FOG_HOLD", "WIND", "LIGHT"];
     const safetyStates = ["NORMAL", "SIGNAL", "TIMEOUT", "ESTOP", "FAULT"];
-    const controlActions = ["NONE", "SYSTEM_ENABLE", "SYSTEM_DISABLE", "LIGHT_AUTO", "LIGHT_COLOR", "LIGHT_OFF", "RELAY_ON", "RELAY_OFF", "STEPPER_FORWARD", "STEPPER_BACKWARD", "STEPPER_STOP", "ALL_STOP", "FAN_ON", "FAN_OFF", "BUBBLE_TRIGGER"];
+    const controlActions = ["NONE", "SYSTEM_ENABLE", "SYSTEM_DISABLE", "LIGHT_AUTO", "LIGHT_COLOR", "LIGHT_OFF", "RELAY_ON", "RELAY_OFF", "STEPPER_FORWARD", "STEPPER_BACKWARD", "STEPPER_STOP", "ALL_STOP", "FAN_ON", "FAN_OFF", "BUBBLE_TRIGGER", "BUBBLE_CONFIG", "VIB_ENABLE", "VIB_DISABLE"];
     const EEG_POWER_FIELDS = ["delta", "theta", "lowAlpha", "highAlpha", "lowBeta", "highBeta", "lowGamma", "midGamma"];
     const STEPPER_STEPS_PER_REV = 1600;
     const ids = {};
@@ -690,15 +750,35 @@ INDEX_HTML = r"""<!doctype html>
     let commandFeedbackTimer = 0;
     let latestCommandReady = false;
     let latestOutputReady = false;
+    let latestM5Seen = false;
     let latestMicSeen = false;
     let latestSystemEnabled = false;
     let latestBubbleActive = false;
     let latestRelayOutputEnabled = false;
     let latestFogOn = false;
     let latestFanOn = false;
+    let latestVibrationEnabled = true;
     let lastVibrationTriggerCount = null;
     const vibrationHistory = [];
     const STEPPER_SINGLE_TARGET = 1;
+    const BUBBLE_CONFIG_INPUT_IDS = [
+      "bubbleReverseTurns",
+      "bubbleFogStartSec",
+      "bubbleFanLightStartSec",
+      "bubbleForwardStartSec",
+      "bubbleForwardTurns",
+      "bubbleFogStopSec",
+      "bubbleFanStopSec",
+      "bubbleLightStopSec"
+    ];
+    const BUBBLE_TIMELINE_INPUT_IDS = [
+      "bubbleFogStartSec",
+      "bubbleFanLightStartSec",
+      "bubbleForwardStartSec",
+      "bubbleFogStopSec",
+      "bubbleFanStopSec",
+      "bubbleLightStopSec"
+    ];
     const systemOutputActions = new Set([
       "light_auto",
       "relay_on",
@@ -710,7 +790,7 @@ INDEX_HTML = r"""<!doctype html>
       "stepper_stop",
       "bubble_trigger"
     ]);
-    const bubbleLockedActions = new Set(["stepper_forward", "stepper_backward", "stepper_stop", "relay_on", "relay_off", "fan_on", "fan_off", "bubble_trigger"]);
+    const bubbleLockedActions = new Set(["stepper_forward", "stepper_backward", "stepper_stop", "relay_on", "relay_off", "fan_on", "fan_off", "bubble_trigger", "bubble_config"]);
     document.querySelectorAll("[id]").forEach((el) => ids[el.id] = el);
     document.querySelectorAll("button[data-action], #clearLog").forEach((button) => buttonLabels.set(button, button.textContent));
     const lightPresetButtons = Array.from(document.querySelectorAll(".mood-button"));
@@ -754,6 +834,49 @@ INDEX_HTML = r"""<!doctype html>
     const updateStepperPreview = () => {
       setText("stepperStepsPreview", `${stepperSteps(null)} 步`);
     };
+    const readNumber = (id, fallback, min, max) => {
+      const raw = Number(ids[id]?.value ?? fallback);
+      const value = Number.isFinite(raw) ? raw : fallback;
+      return Math.max(min, Math.min(max, value));
+    };
+    const turnsToSteps = (turns) => Math.max(0, Math.min(65535, Math.round(turns * STEPPER_STEPS_PER_REV)));
+    const timelineSeconds = (id, fallback) => Math.round(readNumber(id, fallback, 0, 60) * 10) / 10;
+    const secondsToMs = (seconds) => Math.max(0, Math.min(60000, Math.round(seconds * 10) * 100));
+    const timelineLabel = (seconds) => Number(seconds).toFixed(1);
+    const bubbleConfigValues = () => {
+      return {
+        reverseTurns: readNumber("bubbleReverseTurns", 1, 0, 20),
+        forwardTurns: readNumber("bubbleForwardTurns", 1, 0, 20),
+        fogStartSec: timelineSeconds("bubbleFogStartSec", 1.0),
+        fanLightStartSec: timelineSeconds("bubbleFanLightStartSec", 5.0),
+        forwardStartSec: timelineSeconds("bubbleForwardStartSec", 9.0),
+        fogStopSec: timelineSeconds("bubbleFogStopSec", 12.7),
+        fanStopSec: timelineSeconds("bubbleFanStopSec", 13.7),
+        lightStopSec: timelineSeconds("bubbleLightStopSec", 16.7)
+      };
+    };
+    const bubbleConfigArgs = () => {
+      const config = bubbleConfigValues();
+      return [
+        turnsToSteps(config.reverseTurns),
+        secondsToMs(config.fogStartSec),
+        secondsToMs(config.fanLightStartSec),
+        secondsToMs(config.forwardStartSec),
+        turnsToSteps(config.forwardTurns),
+        secondsToMs(config.fogStopSec),
+        secondsToMs(config.fanStopSec),
+        secondsToMs(config.lightStopSec)
+      ];
+    };
+    const updateBubbleConfigPreview = () => {
+      const config = bubbleConfigValues();
+      const args = bubbleConfigArgs();
+      setText("bubbleConfigSummary", `基准 0.0s · 步进 0.1s`);
+      setText("bubbleMotorTimeline", `0.0s 反拉 ${args[0]} 步；${timelineLabel(config.forwardStartSec)}s 回推 ${args[4]} 步`);
+      setText("bubbleFogTimeline", `${timelineLabel(config.fogStartSec)}s 开；${timelineLabel(config.fogStopSec)}s 关`);
+      setText("bubbleFanTimeline", `${timelineLabel(config.fanLightStartSec)}s 开；${timelineLabel(config.fanStopSec)}s 关`);
+      setText("bubbleLightTimeline", `${timelineLabel(config.fanLightStartSec)}s 开；${timelineLabel(config.lightStopSec)}s 关`);
+    };
     const commandArgs = (action, trigger) => {
       if (action === "light_color") {
         const hex = normalizeHex(trigger?.dataset.color).slice(1);
@@ -770,6 +893,9 @@ INDEX_HTML = r"""<!doctype html>
       if (action === "stepper_stop") {
         return [0, STEPPER_SINGLE_TARGET, 0, 0];
       }
+      if (action === "bubble_config") {
+        return bubbleConfigArgs();
+      }
       return [0, 0, 0, 0];
     };
     const setCommandFeedback = (state, text, duration = 1600) => {
@@ -785,6 +911,12 @@ INDEX_HTML = r"""<!doctype html>
       if (!latestCommandReady) return false;
       if (action === "system_enable" || action === "system_disable") {
         return true;
+      }
+      if (action === "vibration_enable") {
+        return latestM5Seen && !latestVibrationEnabled;
+      }
+      if (action === "vibration_disable") {
+        return latestM5Seen && latestVibrationEnabled;
       }
       if (!latestMicSeen) return false;
       if (action === "light_color" || action === "light_off") {
@@ -835,6 +967,9 @@ INDEX_HTML = r"""<!doctype html>
         button.disabled = pending || !canUseButton(button);
       });
       ids.stepperTurns.disabled = !commandReady || !micSeen || !systemEnabled || bubbleActive;
+      BUBBLE_CONFIG_INPUT_IDS.forEach((id) => {
+        if (ids[id]) ids[id].disabled = bubbleActive;
+      });
     };
     const renderLogs = (logs) => {
       if (suppressLogRender) return;
@@ -872,6 +1007,18 @@ INDEX_HTML = r"""<!doctype html>
       lastVibrationTriggerCount = count;
       renderVibrationHistory();
     };
+    const postCommand = async (action, args) => {
+      const response = await fetch("/api/command", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({action, args})
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || response.status);
+      }
+      return payload;
+    };
     const sendCommand = async (button) => {
       const action = button.dataset.action;
       const label = buttonLabels.get(button) || action;
@@ -886,22 +1033,19 @@ INDEX_HTML = r"""<!doctype html>
       setCommandFeedback("warn", "发送中", 30000);
       setNotice(`正在发送：${label}`);
       try {
-        const response = await fetch("/api/command", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({action, args: commandArgs(action, button)})
-        });
-        const payload = await response.json();
-        if (!response.ok) {
-          setCommandFeedback("bad", "失败");
-          setNotice(`命令未发送：${payload.error || response.status}`);
+        if (action === "bubble_trigger") {
+          const configPayload = await postCommand("bubble_config", bubbleConfigArgs());
+          const triggerPayload = await postCommand(action, commandArgs(action, button));
+          setCommandFeedback("ok", "已发送");
+          setNotice(`配置已保存并触发：${configPayload.command}；${triggerPayload.command}`);
           return;
         }
+        const payload = await postCommand(action, commandArgs(action, button));
         setCommandFeedback("ok", "已发送");
         setNotice(`命令已交给串口队列：${payload.command}`);
       } catch (error) {
         setCommandFeedback("bad", "失败");
-        setNotice(`命令未发送：${error}`);
+        setNotice(`命令未发送：${error.message || error}`);
       } finally {
         setButtonPending(button, false);
       }
@@ -917,7 +1061,13 @@ INDEX_HTML = r"""<!doctype html>
       setTimeout(() => suppressLogRender = false, 2500);
     });
     ids.stepperTurns.addEventListener("input", updateStepperPreview);
+    BUBBLE_CONFIG_INPUT_IDS.forEach((id) => ids[id]?.addEventListener("input", updateBubbleConfigPreview));
+    BUBBLE_TIMELINE_INPUT_IDS.forEach((id) => ids[id]?.addEventListener("change", () => {
+      ids[id].value = timelineSeconds(id, 0).toFixed(1);
+      updateBubbleConfigPreview();
+    }));
     updateStepperPreview();
+    updateBubbleConfigPreview();
     renderVibrationHistory();
 
     const update = (state) => {
@@ -929,13 +1079,17 @@ INDEX_HTML = r"""<!doctype html>
       const outputReady = Boolean(commandReady && micSeen && state.mic.systemEnabled);
       const bubbleActive = Boolean(micSeen && state.mic.bubbleState > 0);
       const vibrationSeen = Boolean(m5Seen && state.m5.vibrationStatus === "YES" && state.m5.vibrationAgeMs >= 0 && state.m5.vibrationAgeMs < 3000);
+      const vibrationEnabled = state.m5.vibrationEnabled !== false;
       const fogOn = Boolean(micSeen && state.mic.relayState === 2);
       const fanOn = Boolean(micSeen && state.mic.fanState === 2);
       const relayOutputEnabled = Boolean(micSeen && state.mic.relayOutputEnabled);
+      latestM5Seen = m5Seen;
+      latestVibrationEnabled = vibrationEnabled;
       pill(ids.webStatus, "ok", "已连接");
       pill(ids.sourceStatus, serialReady ? "ok" : "warn", serialReady ? "串口在线" : "等待串口");
       pill(ids.m5Status, m5Seen ? "ok" : "warn", m5Seen ? "在线" : "等待");
       pill(ids.micStatus, micSeen ? "ok" : "warn", micSeen ? "在线" : "等待");
+      pill(ids.vibrationStatus, vibrationSeen ? "ok" : "warn", vibrationSeen ? "在线" : (m5Seen ? "等待" : "M5等待"));
       pill(ids.eegStatus, eegSeen ? (state.eeg.ageMs < 1200 ? "ok" : "warn") : "warn", eegSeen ? "真实数据" : "等待脑电");
       pill(ids.systemEnabled, micSeen ? (state.mic.systemEnabled ? "ok" : "bad") : "neutral", micSeen ? (state.mic.systemEnabled ? "系统已开启" : "系统关闭") : "--");
       setCommandReady(commandReady);
@@ -973,8 +1127,9 @@ INDEX_HTML = r"""<!doctype html>
       setText("vibrationDetail", vibrationSeen ? `value ${state.m5.vibrationSensor} / count ${state.m5.vibrationTriggerCount}` : "ESP32-S3 等待");
       setText("vibrationCount", vibrationSeen ? state.m5.vibrationTriggerCount : "--");
       setText("vibrationLast", vibrationSeen && state.m5.vibrationLastMs >= 0 ? `${Math.round(state.m5.vibrationLastMs / 1000)} 秒` : "--");
+      setText("vibrationMode", m5Seen ? (vibrationEnabled ? "已启用" : "已停用") : "--");
       updateVibrationHistory(state, vibrationSeen);
-      pill(ids.vibrationSource, vibrationSeen ? (state.m5.vibrationDetected ? "warn" : "ok") : "neutral", vibrationSeen ? "震动板在线" : (m5Seen ? "等待震动板" : "M5 等待"));
+      pill(ids.vibrationSource, vibrationSeen ? (!vibrationEnabled ? "neutral" : (state.m5.vibrationDetected ? "warn" : "ok")) : "neutral", vibrationSeen ? (!vibrationEnabled ? "震动停用" : "震动板在线") : (m5Seen ? "等待震动板" : "M5 等待"));
       setText("bubbleState", modeText(micSeen, bubbleStates, state.mic.bubbleState));
       setText("bubbleDetail", micSeen ? `count ${state.mic.bubbleTriggerCount} / ${Math.round(state.mic.bubbleActiveMs / 1000)} 秒` : "--");
       pill(
@@ -1009,6 +1164,7 @@ INDEX_HTML = r"""<!doctype html>
     events.onmessage = (event) => update(JSON.parse(event.data));
     events.onerror = () => {
       pill(ids.webStatus, "bad", "断开");
+      pill(ids.vibrationStatus, "warn", "等待");
       setCommandReady(false);
       setControlAvailability(false, false, false, false);
       setNotice("前端与本地服务断开。");
@@ -1061,6 +1217,7 @@ class M5Status:
     vibration_bubble_state: int = 0
     vibration_trigger_count: int = 0
     vibration_last_ms: int = -1
+    vibration_enabled: int = 1
     pressure_pressed: int = 0
     pressure_trigger_count: int = 0
     pressure_last_ms: int = -1
@@ -1397,6 +1554,7 @@ class DreamBridge:
                 self.m5_status.vibration_trigger_count = int_value(pairs, "VIB_TRIGGER_COUNT")
                 vibration_last_ms = int_value(pairs, "VIB_LAST_MS", -1)
                 self.m5_status.vibration_last_ms = -1 if vibration_last_ms >= 0x7FFFFFFF else vibration_last_ms
+                self.m5_status.vibration_enabled = int_value(pairs, "VIB_ENABLED", 1)
                 self.m5_status.pressure_pressed = int_value(pairs, "PRESSURE")
                 pressure_last_ms = int_value(pairs, "PRESSURE_LAST_MS", -1)
                 self.m5_status.pressure_last_ms = -1 if pressure_last_ms >= 0x7FFFFFFF else pressure_last_ms
@@ -1438,7 +1596,13 @@ class DreamBridge:
                     self.mic_status.system_enabled = int_value(pairs, "MIC_SYSTEM_ENABLED")
                 else:
                     self.mic_status.seen = False
-        if line.startswith("EVENT=CONTROL") or line.startswith("EVENT=SERIAL_PARSE_FAIL"):
+        if (
+            line.startswith("EVENT=CONTROL")
+            or line.startswith("EVENT=BUBBLE")
+            or line.startswith("EVENT=PRESSURE")
+            or line.startswith("EVENT=VIBRATION")
+            or line.startswith("EVENT=SERIAL_PARSE_FAIL")
+        ):
             self.log(f"M5: {line}")
 
     def print_status(self) -> None:
@@ -1459,14 +1623,18 @@ class DreamBridge:
         action_name = CONTROL_ACTIONS.get(action_key)
         if action_name is None:
             raise ValueError(f"unknown action: {action_key}")
-        clean_args = [max(0, min(65535, int(value))) for value in (args + [0, 0, 0, 0])[:4]]
+        clean_args = [max(0, min(65535, int(value))) for value in (args + [0, 0, 0, 0, 0, 0, 0, 0])[:8]]
         with self.lock:
             if not self.runtime.target_open:
                 raise RuntimeError("target serial is not open")
             seq = self.command_seq
             self.command_seq += 1
             time_ms = int((time.monotonic() - self.start_time) * 1000)
-        line = f"CMD,{seq},{time_ms},{action_name},{clean_args[0]},{clean_args[1]},{clean_args[2]},{clean_args[3]}\n"
+        line = (
+            f"CMD,{seq},{time_ms},{action_name},"
+            f"{clean_args[0]},{clean_args[1]},{clean_args[2]},{clean_args[3]},"
+            f"{clean_args[4]},{clean_args[5]},{clean_args[6]},{clean_args[7]}\n"
+        )
         self.command_queue.put(line)
         return line.strip()
 
@@ -1529,6 +1697,7 @@ class DreamBridge:
                     "vibrationBubbleState": self.m5_status.vibration_bubble_state,
                     "vibrationTriggerCount": self.m5_status.vibration_trigger_count,
                     "vibrationLastMs": self.m5_status.vibration_last_ms,
+                    "vibrationEnabled": bool(self.m5_status.vibration_enabled),
                     "pressurePressed": bool(self.m5_status.pressure_pressed),
                     "pressureTriggerCount": self.m5_status.pressure_trigger_count,
                     "pressureLastMs": self.m5_status.pressure_last_ms,
