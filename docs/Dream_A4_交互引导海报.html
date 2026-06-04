@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dream A4 交互引导海报</title>
+  <style>
+    @page { size: A4; margin: 0; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #f4f4f1;
+      color: #171816;
+      font-family: "Microsoft YaHei", "Noto Sans CJK SC", "PingFang SC", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+    .sheet {
+      width: 210mm;
+      height: 297mm;
+      margin: 0 auto;
+      background: #fffefb;
+      padding: 22mm 20mm;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 18mm;
+    }
+    header {
+      display: grid;
+      gap: 6mm;
+      border-bottom: 0.35mm solid #171816;
+      padding-bottom: 10mm;
+    }
+    .kicker {
+      font-size: 10pt;
+      color: #6b6d66;
+    }
+    h1 {
+      margin: 0;
+      font-size: 54pt;
+      line-height: 0.95;
+      font-weight: 760;
+    }
+    .subtitle {
+      font-size: 13pt;
+      color: #30332f;
+    }
+    main {
+      display: grid;
+      grid-template-columns: 23mm 1fr;
+      gap: 8mm 10mm;
+      align-content: start;
+    }
+    .num {
+      width: 18mm;
+      height: 18mm;
+      border: 0.35mm solid #171816;
+      display: grid;
+      place-items: center;
+      font-size: 15pt;
+      font-weight: 720;
+    }
+    .step {
+      border-bottom: 0.25mm solid #d7d8d1;
+      padding-bottom: 7mm;
+      display: grid;
+      gap: 2.5mm;
+    }
+    h2 {
+      margin: 0;
+      font-size: 18pt;
+      line-height: 1.2;
+    }
+    p {
+      margin: 0;
+      font-size: 10.5pt;
+      line-height: 1.75;
+      color: #4c4f49;
+    }
+    footer {
+      border-top: 0.35mm solid #171816;
+      padding-top: 8mm;
+      display: grid;
+      grid-template-columns: 1fr 32mm;
+      gap: 12mm;
+      align-items: end;
+    }
+    .note {
+      font-size: 10pt;
+      line-height: 1.8;
+      color: #343731;
+    }
+    .qr {
+      width: 32mm;
+      height: 32mm;
+      border: 0.35mm solid #171816;
+      display: grid;
+      place-items: center;
+      color: #7a7d76;
+      font-size: 8pt;
+      text-align: center;
+      padding: 3mm;
+    }
+    @media print {
+      body { background: #fff; }
+      .sheet { margin: 0; }
+    }
+  </style>
+</head>
+<body>
+  <section class="sheet">
+    <header>
+      <div class="kicker">脑电感知 | 意识转译 | 光影交互</div>
+      <h1>Dream</h1>
+      <div class="subtitle">让意识的波动，在泡泡与光中短暂显影。</div>
+    </header>
+    <main>
+      <div class="num">01</div>
+      <div class="step">
+        <h2>靠近装置，等待现场引导</h2>
+        <p>你可以选择佩戴脑电设备参与，也可以直接体验无脑电模式。两种方式都会触发泡泡、风与灯光的反馈。</p>
+      </div>
+      <div class="num">02</div>
+      <div class="step">
+        <h2>有脑电：让状态进入系统</h2>
+        <p>设备会读取专注与冥想等实时信号。信号稳定时，灯光颜色会根据当下脑电状态缓慢变化。</p>
+      </div>
+      <div class="num">03</div>
+      <div class="step">
+        <h2>无脑电：直接触发互动</h2>
+        <p>没有佩戴设备时，装置会使用预设色板与随机逻辑继续运行。泡泡出现时，灯光会从当前色板中生成新的回应。</p>
+      </div>
+      <div class="num">04</div>
+      <div class="step">
+        <h2>观察泡泡与光的关系</h2>
+        <p>一次触发会同时启动机械动作、风、雾与灯光。请在作品边界外观看，让短暂的泡泡成为意识被读出的瞬间。</p>
+      </div>
+    </main>
+    <footer>
+      <div class="note">请勿触摸运动机构、灯具、风扇与雾化设备。若现场工作人员提示等待，请以现场引导为准。</div>
+      <div class="qr">现场二维码<br>预留区域</div>
+    </footer>
+  </section>
+</body>
+</html>

@@ -31,6 +31,7 @@
 #define LIGHT_FLOW_OFFSET 96
 #define LIGHT_SMOOTH_TARGET_PERCENT 6
 #define LIGHT_SATURATION_PERCENT 65
+#define LIGHT_PALETTE_MAX_STOPS 6
 
 // Keep EEG automatic linkage scoped to lights. Stepper remains available for manual bench tuning only.
 #define DREAM_ENABLE_EEG_STEPPER_AUTO 0
@@ -163,6 +164,21 @@ enum DreamControlAction : uint8_t {
   CONTROL_FAN_OFF,
   CONTROL_BUBBLE_TRIGGER,
   CONTROL_BUBBLE_CONFIG,
+  CONTROL_RUN_MODE,
+  CONTROL_LIGHT_STRATEGY,
+  CONTROL_PALETTE_SETTINGS,
+  CONTROL_PALETTE_NODE,
+};
+
+enum DreamRunMode : uint8_t {
+  RUN_MODE_WITH_EEG,
+  RUN_MODE_NO_EEG,
+};
+
+enum DreamLightStrategy : uint8_t {
+  LIGHT_STRATEGY_EEG_REALTIME,
+  LIGHT_STRATEGY_PALETTE_RANDOM,
+  LIGHT_STRATEGY_AUTO,
 };
 
 struct __attribute__((packed)) DreamEegEspNowPacket {
@@ -263,6 +279,11 @@ struct RgbwColor {
   uint8_t w;
 };
 
+struct PaletteStop {
+  uint16_t position10;
+  RgbwColor color;
+};
+
 DreamEegEspNowPacket latestEegPacket = {};
 byte dmxData[DMX_PACKET_SIZE] = {};
 
@@ -272,6 +293,15 @@ RgbwColor light1Target = {};
 RgbwColor light2Target = {};
 const RgbwColor BLUE_PURPLE_FLOW_BASE = {0x4B, 0x7D, 0xFF, 0};
 const RgbwColor BLUE_PURPLE_FLOW_BLUE = {0x24, 0x5C, 0xFF, 0};
+PaletteStop paletteStops[LIGHT_PALETTE_MAX_STOPS] = {
+  {0, {0x4B, 0x7D, 0xFF, 0}},
+  {420, {0x20, 0xC7, 0xBD, 0}},
+  {720, {0xFF, 0x5C, 0xC8, 8}},
+  {1000, {0xFF, 0x8A, 0x4C, 10}},
+};
+uint8_t paletteStopCount = 4;
+uint16_t paletteTwoLightOffsetMs = 1000;
+uint16_t paletteFlowPeriodMs = 6000;
 
 uint32_t eegRxCount = 0;
 uint32_t eegDropCount = 0;
@@ -307,6 +337,10 @@ bool timeoutWasActive = false;
 bool systemEnabled = false;
 bool manualLightEnabled = false;
 bool autoLightReleased = false;
+uint8_t runMode = RUN_MODE_WITH_EEG;
+uint8_t lightStrategy = LIGHT_STRATEGY_AUTO;
+uint8_t bubbleLightStrategy = LIGHT_STRATEGY_AUTO;
+RgbwColor bubbleRandomLightColor = {0x4B, 0x7D, 0xFF, 0};
 RgbwColor manualLightColor = {};
 uint32_t bubbleStateStartMs = 0;
 uint32_t bubbleStartMs = 0;
@@ -329,6 +363,8 @@ BubbleFlowConfig bubbleConfig = {
   BUBBLE_DEFAULT_FAN_STOP_AT_MS,
   BUBBLE_DEFAULT_LIGHT_STOP_AT_MS,
 };
+
+uint32_t eegAgeMs();
 
 #if DREAM_ENABLE_RELAY_OUTPUT
 bool manualFogRequested = false;
@@ -468,6 +504,69 @@ RgbwColor scaleColor(const RgbwColor &color, uint8_t brightness) {
     static_cast<uint8_t>(static_cast<uint16_t>(color.b) * brightness / 255),
     static_cast<uint8_t>(static_cast<uint16_t>(color.w) * brightness / 255),
   };
+}
+
+RgbwColor samplePalette(uint16_t position10, uint8_t brightness = 255) {
+  if (paletteStopCount == 0) {
+    return scaleColor(BLUE_PURPLE_FLOW_BASE, brightness);
+  }
+
+  position10 = constrain(static_cast<int>(position10), 0, 1000);
+  PaletteStop left = paletteStops[0];
+  PaletteStop right = paletteStops[paletteStopCount - 1];
+  for (uint8_t i = 0; i < paletteStopCount; i++) {
+    if (paletteStops[i].position10 <= position10) {
+      left = paletteStops[i];
+    }
+    if (paletteStops[i].position10 >= position10) {
+      right = paletteStops[i];
+      break;
+    }
+  }
+
+  if (left.position10 == right.position10) {
+    return scaleColor(left.color, brightness);
+  }
+
+  const uint16_t span = right.position10 - left.position10;
+  const uint16_t amount = position10 - left.position10;
+  const uint8_t r = static_cast<uint8_t>((static_cast<uint32_t>(left.color.r) * (span - amount) + static_cast<uint32_t>(right.color.r) * amount) / span);
+  const uint8_t g = static_cast<uint8_t>((static_cast<uint32_t>(left.color.g) * (span - amount) + static_cast<uint32_t>(right.color.g) * amount) / span);
+  const uint8_t b = static_cast<uint8_t>((static_cast<uint32_t>(left.color.b) * (span - amount) + static_cast<uint32_t>(right.color.b) * amount) / span);
+  const uint8_t w = static_cast<uint8_t>((static_cast<uint32_t>(left.color.w) * (span - amount) + static_cast<uint32_t>(right.color.w) * amount) / span);
+  return scaleColor({r, g, b, w}, brightness);
+}
+
+RgbwColor randomPaletteColor() {
+  return samplePalette(static_cast<uint16_t>(random(0, 1001)), 255);
+}
+
+bool eegUsableForLight() {
+  return runMode == RUN_MODE_WITH_EEG &&
+         haveEeg &&
+         eegAgeMs() <= EEG_TIMEOUT_MS &&
+         !isEegSignalBad(latestEegPacket.poorSignal) &&
+         (latestEegPacket.attention > 0 || latestEegPacket.meditation > 0);
+}
+
+RgbwColor eegPaletteColor() {
+  const uint16_t position10 = static_cast<uint16_t>(
+    constrain(static_cast<int>(latestEegPacket.attention) * 7 + static_cast<int>(latestEegPacket.meditation) * 3, 0, 1000));
+  const uint8_t brightness = static_cast<uint8_t>(constrain(max(static_cast<int>(latestEegPacket.attention), static_cast<int>(latestEegPacket.meditation)) * 255 / 100, 80, 255));
+  return samplePalette(position10, brightness);
+}
+
+uint8_t decideBubbleLightStrategy() {
+  if (runMode == RUN_MODE_NO_EEG) {
+    return LIGHT_STRATEGY_PALETTE_RANDOM;
+  }
+  if (lightStrategy == LIGHT_STRATEGY_EEG_REALTIME) {
+    return eegUsableForLight() ? LIGHT_STRATEGY_EEG_REALTIME : LIGHT_STRATEGY_PALETTE_RANDOM;
+  }
+  if (lightStrategy == LIGHT_STRATEGY_PALETTE_RANDOM) {
+    return LIGHT_STRATEGY_PALETTE_RANDOM;
+  }
+  return eegUsableForLight() ? LIGHT_STRATEGY_EEG_REALTIME : LIGHT_STRATEGY_PALETTE_RANDOM;
 }
 
 bool isBluePurpleFlowPreset(const RgbwColor &color) {
@@ -661,7 +760,7 @@ bool validateControlPacket(DreamControlEspNowPacket &packet) {
     return false;
   }
 
-  return packet.action > CONTROL_NONE && packet.action <= CONTROL_BUBBLE_CONFIG;
+  return packet.action > CONTROL_NONE && packet.action <= CONTROL_PALETTE_NODE;
 }
 
 void updateSequenceCounters(uint32_t incomingSeq) {
@@ -797,6 +896,80 @@ void applyBubbleConfig(const DreamControlEspNowPacket &packet) {
   Serial.println(bubbleConfig.lightStopAtMs);
 }
 
+void applyRunMode(const DreamControlEspNowPacket &packet) {
+  runMode = packet.arg1 == RUN_MODE_NO_EEG ? RUN_MODE_NO_EEG : RUN_MODE_WITH_EEG;
+  if (runMode == RUN_MODE_NO_EEG && lightStrategy == LIGHT_STRATEGY_EEG_REALTIME) {
+    lightStrategy = LIGHT_STRATEGY_PALETTE_RANDOM;
+  }
+  Serial.print("EVENT=RUN_MODE_APPLIED MODE=");
+  Serial.println(runMode);
+}
+
+void applyLightStrategy(const DreamControlEspNowPacket &packet) {
+  const uint8_t requested = static_cast<uint8_t>(constrain(static_cast<int>(packet.arg1), 0, 2));
+  lightStrategy = (runMode == RUN_MODE_NO_EEG && requested == LIGHT_STRATEGY_EEG_REALTIME) ? LIGHT_STRATEGY_PALETTE_RANDOM : requested;
+  if (packet.arg2 >= 500) {
+    paletteFlowPeriodMs = packet.arg2;
+  }
+  paletteTwoLightOffsetMs = packet.arg3;
+  Serial.print("EVENT=LIGHT_STRATEGY_APPLIED STRATEGY=");
+  Serial.print(lightStrategy);
+  Serial.print(" FLOW_PERIOD_MS=");
+  Serial.print(paletteFlowPeriodMs);
+  Serial.print(" TWO_LIGHT_OFFSET_MS=");
+  Serial.println(paletteTwoLightOffsetMs);
+}
+
+void applyPaletteSettings(const DreamControlEspNowPacket &packet) {
+  paletteTwoLightOffsetMs = packet.arg1;
+  paletteFlowPeriodMs = max(static_cast<uint16_t>(500), packet.arg2);
+  const uint8_t requestedCount = static_cast<uint8_t>(constrain(static_cast<int>(packet.arg3), 1, LIGHT_PALETTE_MAX_STOPS));
+  paletteStopCount = requestedCount;
+  Serial.print("EVENT=PALETTE_SETTINGS_APPLIED COUNT=");
+  Serial.print(paletteStopCount);
+  Serial.print(" OFFSET_MS=");
+  Serial.print(paletteTwoLightOffsetMs);
+  Serial.print(" PERIOD_MS=");
+  Serial.println(paletteFlowPeriodMs);
+}
+
+void sortPaletteStops() {
+  for (uint8_t i = 0; i < paletteStopCount; i++) {
+    for (uint8_t j = i + 1; j < paletteStopCount; j++) {
+      if (paletteStops[j].position10 < paletteStops[i].position10) {
+        PaletteStop temp = paletteStops[i];
+        paletteStops[i] = paletteStops[j];
+        paletteStops[j] = temp;
+      }
+    }
+  }
+}
+
+void applyPaletteNode(const DreamControlEspNowPacket &packet) {
+  const uint8_t index = static_cast<uint8_t>(constrain(static_cast<int>(packet.arg1), 0, LIGHT_PALETTE_MAX_STOPS - 1));
+  const uint8_t count = static_cast<uint8_t>(constrain(static_cast<int>(packet.arg2), 1, LIGHT_PALETTE_MAX_STOPS));
+  paletteStopCount = count;
+  if (index >= paletteStopCount) {
+    return;
+  }
+  paletteStops[index] = {
+    static_cast<uint16_t>(constrain(static_cast<int>(packet.arg3), 0, 1000)),
+    {
+      clampByteArg(packet.arg4),
+      clampByteArg(packet.arg5),
+      clampByteArg(packet.arg6),
+      clampByteArg(packet.arg7),
+    },
+  };
+  sortPaletteStops();
+  Serial.print("EVENT=PALETTE_NODE_APPLIED INDEX=");
+  Serial.print(index);
+  Serial.print(" COUNT=");
+  Serial.print(paletteStopCount);
+  Serial.print(" POSITION10=");
+  Serial.println(packet.arg3);
+}
+
 bool startBubbleStepperMove(uint16_t steps, bool forward, uint8_t phase) {
 #if DREAM_ENABLE_STEPPER_OUTPUT
   stepperPulseActive = false;
@@ -883,6 +1056,8 @@ void startBubbleFlow(const char *source) {
   resetBubbleTimelineMarkers();
   bubbleTriggerCount++;
   autoLightReleased = false;
+  bubbleLightStrategy = decideBubbleLightStrategy();
+  bubbleRandomLightColor = bubbleLightStrategy == LIGHT_STRATEGY_EEG_REALTIME ? eegPaletteColor() : randomPaletteColor();
   bubbleStepperMoving = false;
   bubbleStepperPhase = BUBBLE_STEPPER_NONE;
 #if DREAM_ENABLE_STEPPER_OUTPUT
@@ -912,7 +1087,9 @@ void startBubbleFlow(const char *source) {
   Serial.print(" FAN_STOP_AT_MS=");
   Serial.print(bubbleConfig.fanStopAtMs);
   Serial.print(" LIGHT_STOP_AT_MS=");
-  Serial.println(bubbleConfig.lightStopAtMs);
+  Serial.print(bubbleConfig.lightStopAtMs);
+  Serial.print(" LIGHT_STRATEGY=");
+  Serial.println(bubbleLightStrategy);
 }
 
 bool bubbleTimelineOutputActive(uint32_t now, uint16_t startAtMs, uint16_t stopAtMs) {
@@ -1137,6 +1314,18 @@ void applyControlPacket(const DreamControlEspNowPacket &packet, const uint8_t *m
       break;
     case CONTROL_BUBBLE_CONFIG:
       applyBubbleConfig(packet);
+      break;
+    case CONTROL_RUN_MODE:
+      applyRunMode(packet);
+      break;
+    case CONTROL_LIGHT_STRATEGY:
+      applyLightStrategy(packet);
+      break;
+    case CONTROL_PALETTE_SETTINGS:
+      applyPaletteSettings(packet);
+      break;
+    case CONTROL_PALETTE_NODE:
+      applyPaletteNode(packet);
       break;
     case CONTROL_STEPPER_FORWARD:
 #if DREAM_ENABLE_STEPPER_OUTPUT
@@ -1424,8 +1613,14 @@ void updateLightTargets() {
     }
 
     if (isColorOff(manualLightColor)) {
-      lightMode = LIGHT_IDLE;
-      setBluePurpleFlowTargets(255);
+      if (bubbleLightStrategy == LIGHT_STRATEGY_EEG_REALTIME) {
+        lightMode = LIGHT_EEG_BLEND;
+      } else {
+        lightMode = LIGHT_IDLE;
+      }
+      manualLightColor = bubbleRandomLightColor;
+      setManualGradientTargets();
+      manualLightColor = {0, 0, 0, 0};
     } else {
       lightMode = LIGHT_MANUAL;
       setManualGradientTargets();
@@ -1451,25 +1646,33 @@ void updateLightTargets() {
     return;
   }
 
-  if (safetyState == SAFETY_LINK_TIMEOUT) {
+  if (runMode == RUN_MODE_NO_EEG || lightStrategy == LIGHT_STRATEGY_PALETTE_RANDOM) {
     lightMode = LIGHT_IDLE;
-    setBluePurpleFlowTargets(255);
+    const uint16_t phase = static_cast<uint16_t>((millis() % max(static_cast<uint16_t>(paletteFlowPeriodMs), static_cast<uint16_t>(500))) * 1000UL / max(static_cast<uint16_t>(paletteFlowPeriodMs), static_cast<uint16_t>(500)));
+    light1Target = samplePalette(phase, 255);
+    light2Target = samplePalette(static_cast<uint16_t>((phase + (static_cast<uint32_t>(paletteTwoLightOffsetMs) * 1000UL / max(static_cast<uint16_t>(paletteFlowPeriodMs), static_cast<uint16_t>(500)))) % 1000), 255);
     return;
   }
 
-  if (safetyState == SAFETY_SIGNAL_BAD) {
+  if (!eegUsableForLight()) {
+    if (lightStrategy == LIGHT_STRATEGY_AUTO) {
+      lightMode = LIGHT_IDLE;
+      const uint16_t phase = static_cast<uint16_t>((millis() % max(static_cast<uint16_t>(paletteFlowPeriodMs), static_cast<uint16_t>(500))) * 1000UL / max(static_cast<uint16_t>(paletteFlowPeriodMs), static_cast<uint16_t>(500)));
+      light1Target = samplePalette(phase, 255);
+      light2Target = samplePalette(static_cast<uint16_t>((phase + (static_cast<uint32_t>(paletteTwoLightOffsetMs) * 1000UL / max(static_cast<uint16_t>(paletteFlowPeriodMs), static_cast<uint16_t>(500)))) % 1000), 255);
+      return;
+    }
     lightMode = LIGHT_SIGNAL_BAD;
     light1Target = {0, 0, 0, 0};
     light2Target = {0, 0, 0, 0};
     return;
   }
 
-  const uint8_t attention = scalePercentToByte(latestEegPacket.attention);
-  const uint8_t meditation = scalePercentToByte(latestEegPacket.meditation);
-  const uint8_t flowBrightness = static_cast<uint8_t>(constrain(static_cast<int>(max(attention, meditation)), 64, 255));
-
   lightMode = LIGHT_EEG_BLEND;
-  setFlowTargets(flowBrightness, latestEegPacket.attention);
+  const RgbwColor eegColor = eegPaletteColor();
+  manualLightColor = eegColor;
+  setManualGradientTargets();
+  manualLightColor = {0, 0, 0, 0};
 }
 
 void updateLightController() {
@@ -1718,7 +1921,7 @@ void sendMicStatus() {
   packet.fanState = fanState;
   packet.bubbleState = bubbleState;
   packet.bubbleOutputEnabled = DREAM_ENABLE_RELAY_OUTPUT ? 1 : 0;
-  packet.reserved2 = 0;
+  packet.reserved2 = static_cast<uint8_t>((runMode & 0x03) | ((lightStrategy & 0x03) << 2) | ((bubbleLightStrategy & 0x03) << 4));
   packet.bubbleTriggerCount = bubbleTriggerCount;
   packet.bubbleActiveMs = currentBubbleActiveMs();
   packet.checksum = calculatePacketChecksum(packet);

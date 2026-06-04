@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import copy
 import json
 import queue
 import sys
@@ -31,6 +32,11 @@ STATE_PUSH_INTERVAL = 0.2
 MIC_STATUS_STALE_MS = 3000
 EEG_SEND_STALE_MS = 1500
 SERIAL_RECONNECT_INTERVAL_S = 2.0
+EEG_CONTROL_STALE_MS = 2500
+EEG_CONTROL_POOR_SIGNAL_MAX = 120
+CONFIG_STORE_NAME = "dream_config_store.json"
+RUN_MODE_CODES = {"with_eeg": 0, "no_eeg": 1}
+LIGHT_STRATEGY_CODES = {"eeg_realtime": 0, "palette_random": 1, "auto": 2}
 CONTROL_ACTIONS = {
     "system_enable": "SYSTEM_ENABLE",
     "system_disable": "SYSTEM_DISABLE",
@@ -49,6 +55,10 @@ CONTROL_ACTIONS = {
     "bubble_config": "BUBBLE_CONFIG",
     "vibration_enable": "VIBRATION_ENABLE",
     "vibration_disable": "VIBRATION_DISABLE",
+    "run_mode": "RUN_MODE",
+    "light_strategy": "LIGHT_STRATEGY",
+    "palette_settings": "PALETTE_SETTINGS",
+    "palette_node": "PALETTE_NODE",
 }
 EEG_POWER_FIELDS = (
     "delta",
@@ -192,6 +202,47 @@ INDEX_HTML = r"""<!doctype html>
       gap: 18px;
       align-items: start;
     }
+    .view-nav {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 14px;
+    }
+    .view-nav button {
+      min-height: 48px;
+      text-align: left;
+      padding: 8px 12px;
+      display: grid;
+      align-content: center;
+      gap: 3px;
+    }
+    .view-nav button span {
+      font-size: 13px;
+      font-weight: 760;
+    }
+    .view-nav button small {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+    }
+    .view-nav button.is-selected {
+      color: #f8f7f1;
+      background: #343632;
+      border-color: #343632;
+    }
+    .view-nav button.is-selected small { color: #d8d8d0; }
+    .view-panel {
+      display: grid;
+      gap: 18px;
+    }
+    .view-panel[hidden] { display: none; }
+    .mode-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.92fr) minmax(360px, 1.08fr);
+      gap: 18px;
+      align-items: start;
+    }
     .stack {
       display: grid;
       gap: 18px;
@@ -283,7 +334,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .button-row.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .button-row.single { grid-template-columns: minmax(0, 1fr); }
-    button, input[type="color"], input[type="range"], input[type="number"] {
+    button, input[type="color"], input[type="range"], input[type="number"], input[type="text"], select {
       font: inherit;
     }
     button {
@@ -396,6 +447,15 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 13px;
       white-space: nowrap;
     }
+    .control-state.is-hint {
+      align-items: flex-start;
+    }
+    .control-state.is-hint strong {
+      white-space: normal;
+      text-align: right;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
+    }
     .step-row {
       display: grid;
       grid-template-columns: 44px minmax(0, 1fr) 82px;
@@ -475,7 +535,7 @@ INDEX_HTML = r"""<!doctype html>
       box-shadow: 0 0 0 2px rgba(52, 54, 50, 0.08);
     }
     input[type="range"] { width: 100%; accent-color: var(--accent); }
-    input[type="number"] {
+    input[type="number"], input[type="text"], select {
       width: 100%;
       min-height: 38px;
       border: 1px solid var(--line);
@@ -483,6 +543,119 @@ INDEX_HTML = r"""<!doctype html>
       background: var(--surface);
       color: var(--ink);
       padding: 0 8px;
+    }
+    input[type="color"] {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 3px;
+    }
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .segmented.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .segmented button.is-selected {
+      color: #f8f7f1;
+      background: #343632;
+      border-color: #343632;
+    }
+    .library-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 8px;
+      align-items: end;
+    }
+    .editor-actions {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .palette-preview {
+      min-height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: linear-gradient(90deg, #4b7dff, #20c7bd, #ff5cc8, #ff8a4c);
+    }
+    .palette-list {
+      max-height: 280px;
+      overflow: auto;
+      display: grid;
+      gap: 8px;
+      padding-right: 2px;
+    }
+    .palette-list-item {
+      min-height: 58px;
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      text-align: left;
+      padding: 8px 10px;
+    }
+    .palette-list-item.is-selected {
+      border-color: #343632;
+      box-shadow: 0 0 0 2px rgba(52, 54, 50, 0.08);
+    }
+    .palette-mini {
+      width: 72px;
+      height: 30px;
+      border: 1px solid rgba(32, 33, 31, 0.14);
+      border-radius: 6px;
+      background: linear-gradient(90deg, #4b7dff, #20c7bd);
+    }
+    .palette-list-copy {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+    .palette-list-copy strong {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+    }
+    .palette-list-copy small {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+    }
+    .palette-editor {
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+    }
+    .palette-editor > summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 720;
+      list-style: none;
+    }
+    .palette-editor > summary::-webkit-details-marker { display: none; }
+    .palette-editor[open] > summary { color: var(--ink); }
+    .palette-editor-body {
+      display: grid;
+      gap: 10px;
+      padding-top: 10px;
+    }
+    .palette-stop {
+      display: grid;
+      grid-template-columns: 70px minmax(0, 1fr) 74px 42px;
+      gap: 8px;
+      align-items: center;
+    }
+    .palette-stop button {
+      min-height: 38px;
+      padding: 0;
+    }
+    .test-swatch {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #eeeeea;
     }
     .notice {
       min-height: 22px;
@@ -529,11 +702,13 @@ INDEX_HTML = r"""<!doctype html>
       .app { grid-template-columns: 1fr; }
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
       .layout { grid-template-columns: 1fr; }
+      .mode-grid { grid-template-columns: 1fr; }
       .metric-grid.three, .metric-grid.four, .freq-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 680px) {
       main, aside { padding: 14px; }
       .hero, .section-head, .control-title { align-items: flex-start; flex-direction: column; }
+      .view-nav { grid-template-columns: 1fr; }
       .button-row, .button-row.two, .button-row.single, .control-status, .control-status.single, .device-control-grid, .flow-grid, .flow-preview, .mood-grid, .metric-grid.three, .metric-grid.four, .freq-grid { grid-template-columns: 1fr; }
       .step-row { grid-template-columns: 1fr; }
     }
@@ -569,168 +744,241 @@ INDEX_HTML = r"""<!doctype html>
     <main>
       <div class="hero">
         <div class="hero-copy">
-          <h1>实时状态与机器控制</h1>
-          <p class="subtle">没有收到真实数据时，字段会保持为空，不用模拟值填充。</p>
+          <h1>Dream 控制台</h1>
+          <p class="subtle">先确定是否接入脑电，再进入现场控制；灯光和色板在独立容器中维护。</p>
         </div>
         <span id="eegStatus" class="pill warn">等待脑电</span>
       </div>
-      <div class="layout">
-        <div class="stack">
-          <section>
-            <div class="section-head"><h2>脑电实时数据</h2><span id="eegAge" class="pill neutral">-- ms</span></div>
-            <div class="metric-grid three">
-              <div class="metric"><div class="label">poorSignal</div><div class="value" id="poorSignal">--</div><div class="bar"><span id="poorSignalBar"></span></div></div>
-              <div class="metric"><div class="label">attention</div><div class="value" id="attention">--</div><div class="bar"><span id="attentionBar"></span></div></div>
-              <div class="metric"><div class="label">meditation</div><div class="value" id="meditation">--</div><div class="bar"><span id="meditationBar"></span></div></div>
-            </div>
-          </section>
-          <section>
-            <div class="section-head"><h2>EEG Power 频段</h2><span id="validPacketsPill" class="pill neutral">-- 包</span></div>
-            <div class="freq-grid">
-              <div class="freq"><span>delta</span><strong id="delta">--</strong></div>
-              <div class="freq"><span>theta</span><strong id="theta">--</strong></div>
-              <div class="freq"><span>lowAlpha</span><strong id="lowAlpha">--</strong></div>
-              <div class="freq"><span>highAlpha</span><strong id="highAlpha">--</strong></div>
-              <div class="freq"><span>lowBeta</span><strong id="lowBeta">--</strong></div>
-              <div class="freq"><span>highBeta</span><strong id="highBeta">--</strong></div>
-              <div class="freq"><span>lowGamma</span><strong id="lowGamma">--</strong></div>
-              <div class="freq"><span>midGamma</span><strong id="midGamma">--</strong></div>
-            </div>
-          </section>
-          <section>
-            <div class="section-head"><h2>Microduino 执行状态</h2><span id="micAge" class="pill neutral">-- ms</span></div>
-            <div class="metric-grid four">
-              <div class="metric"><div class="label">灯光</div><div class="value small" id="lightMode">--</div><div class="label" id="lightLevel">level --</div></div>
-              <div class="metric"><div class="label">雾机 / 风扇</div><div class="value small" id="relayState">--</div><div class="label" id="relayEnabled">--</div></div>
-              <div class="metric"><div class="label">步进电机</div><div class="value small" id="stepperState">--</div><div class="label" id="stepperEnabled">--</div></div>
-              <div class="metric"><div class="label">安全状态</div><div class="value small" id="safetyState">--</div><div class="label" id="lastAction">action --</div></div>
-            </div>
-          </section>
-          <section>
-            <div class="section-head"><h2>震动触发</h2><span id="vibrationSource" class="pill neutral">等待震动板</span></div>
-            <div class="metric-grid four">
-              <div class="metric"><div class="label">震动状态</div><div class="value small" id="vibrationState">--</div><div class="label" id="vibrationDetail">ESP32-S3</div></div>
-              <div class="metric"><div class="label">触发次数</div><div class="value small" id="vibrationCount">--</div><div class="label">等同泡泡按钮</div></div>
-              <div class="metric"><div class="label">距上一次</div><div class="value small" id="vibrationLast">--</div><div class="label">震动触发</div></div>
-              <div class="metric"><div class="label">泡泡流程</div><div class="value small" id="bubbleState">--</div><div class="label" id="bubbleDetail">--</div></div>
+      <nav class="view-nav" aria-label="控制台界面">
+        <button class="is-selected" data-view="modeView"><span>运行模式</span><small>有脑电 / 无脑电</small></button>
+        <button data-view="controlView"><span>现场控制</span><small>泡泡、雾机、风扇、电机</small></button>
+        <button data-view="paletteView"><span>色板与灯光</span><small>灯光策略和色板容器</small></button>
+      </nav>
+
+      <section id="modeView" class="view-panel">
+        <div class="mode-grid">
+          <section class="control-panel">
+            <div class="section-head"><h2>选择作品运行方式</h2><span id="runModePill" class="pill neutral">--</span></div>
+            <div class="segmented">
+              <button data-run-mode="with_eeg">有脑电</button>
+              <button data-run-mode="no_eeg">无脑电</button>
             </div>
             <div class="control-status single">
-              <div class="control-state"><span>震动触发开关</span><strong id="vibrationMode">--</strong></div>
+              <div class="control-state"><span>脑电可用性</span><strong id="eegDiagnosis">--</strong></div>
             </div>
             <div class="button-row two">
-              <button class="good" data-action="vibration_enable">启用震动触发</button>
-              <button data-action="vibration_disable">停用震动触发</button>
+              <button data-view-jump="controlView">进入现场控制</button>
+              <button data-view-jump="paletteView">进入色板与灯光</button>
             </div>
           </section>
-          <section>
-            <div class="section-head"><h2>链路统计</h2><span id="m5Age" class="pill neutral">-- ms</span></div>
-            <div class="metric-grid four">
-              <div class="metric"><div class="label">电脑发送帧</div><div class="value small" id="sentFrames">--</div><div class="label">USB -> M5</div></div>
-              <div class="metric"><div class="label">ThinkGear 有效包</div><div class="value small" id="validPackets">--</div><div class="label" id="checksumErrors">checksum --</div></div>
-              <div class="metric"><div class="label">M5 ESP-NOW</div><div class="value small" id="espNowStats">--</div><div class="label" id="m5Command">cmd --</div></div>
-              <div class="metric"><div class="label">MIC 收包</div><div class="value small" id="micPackets">--</div><div class="label" id="micControl">control --</div></div>
-            </div>
-          </section>
+          <div class="stack">
+            <section>
+              <div class="section-head"><h2>脑电实时数据</h2><span id="eegAge" class="pill neutral">-- ms</span></div>
+              <div class="metric-grid three">
+                <div class="metric"><div class="label">poorSignal</div><div class="value" id="poorSignal">--</div><div class="bar"><span id="poorSignalBar"></span></div></div>
+                <div class="metric"><div class="label">attention</div><div class="value" id="attention">--</div><div class="bar"><span id="attentionBar"></span></div></div>
+                <div class="metric"><div class="label">meditation</div><div class="value" id="meditation">--</div><div class="bar"><span id="meditationBar"></span></div></div>
+              </div>
+            </section>
+            <section>
+              <div class="section-head"><h2>EEG Power 频段</h2><span id="validPacketsPill" class="pill neutral">-- 包</span></div>
+              <div class="freq-grid">
+                <div class="freq"><span>delta</span><strong id="delta">--</strong></div>
+                <div class="freq"><span>theta</span><strong id="theta">--</strong></div>
+                <div class="freq"><span>lowAlpha</span><strong id="lowAlpha">--</strong></div>
+                <div class="freq"><span>highAlpha</span><strong id="highAlpha">--</strong></div>
+                <div class="freq"><span>lowBeta</span><strong id="lowBeta">--</strong></div>
+                <div class="freq"><span>highBeta</span><strong id="highBeta">--</strong></div>
+                <div class="freq"><span>lowGamma</span><strong id="lowGamma">--</strong></div>
+                <div class="freq"><span>midGamma</span><strong id="midGamma">--</strong></div>
+              </div>
+            </section>
+          </div>
         </div>
-        <div class="stack">
-          <section class="control-panel">
-            <div class="section-head"><h2>机器控制</h2></div>
-            <div class="button-row two">
-              <button class="good" data-action="system_enable">系统开启</button>
-              <button class="danger" data-action="system_disable">系统关闭</button>
-            </div>
-            <div class="button-row single">
-              <button class="primary" data-action="bubble_trigger">保存并触发流程</button>
-            </div>
-            <div class="control-block">
-              <div class="control-title"><h2>泡泡并行流程</h2><span id="bubbleConfigSummary" class="pill neutral">默认</span></div>
-              <div class="flow-grid">
-                <label class="flow-field"><span>反拉电机圈数</span><small>触发后立即启动</small><input class="bubble-config-input" id="bubbleReverseTurns" type="number" min="0" max="20" step="0.1" value="1"></label>
-                <label class="flow-field"><span>烟雾开启时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleFogStartSec" type="number" min="0" max="60" step="0.1" value="1.0"></label>
-                <label class="flow-field"><span>风扇/灯光开启时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleFanLightStartSec" type="number" min="0" max="60" step="0.1" value="5.0"></label>
-                <label class="flow-field"><span>回推启动时间 秒</span><small>相对反转开始；会等待反转完成</small><input class="bubble-config-input" id="bubbleForwardStartSec" type="number" min="0" max="60" step="0.1" value="9.0"></label>
-                <label class="flow-field"><span>回推电机圈数</span><small>反拉完成后才会执行</small><input class="bubble-config-input" id="bubbleForwardTurns" type="number" min="0" max="20" step="0.1" value="1"></label>
-                <label class="flow-field"><span>烟雾关闭时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleFogStopSec" type="number" min="0" max="60" step="0.1" value="12.7"></label>
-                <label class="flow-field"><span>风扇关闭时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleFanStopSec" type="number" min="0" max="60" step="0.1" value="13.7"></label>
-                <label class="flow-field"><span>灯光关闭时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleLightStopSec" type="number" min="0" max="60" step="0.1" value="16.7"></label>
+      </section>
+
+      <section id="controlView" class="view-panel" hidden>
+        <div class="layout">
+          <div class="stack">
+            <section>
+              <div class="section-head"><h2>Microduino 执行状态</h2><span id="micAge" class="pill neutral">-- ms</span></div>
+              <div class="metric-grid four">
+                <div class="metric"><div class="label">灯光</div><div class="value small" id="lightMode">--</div><div class="label" id="lightLevel">level --</div></div>
+                <div class="metric"><div class="label">雾机 / 风扇</div><div class="value small" id="relayState">--</div><div class="label" id="relayEnabled">--</div></div>
+                <div class="metric"><div class="label">步进电机</div><div class="value small" id="stepperState">--</div><div class="label" id="stepperEnabled">--</div></div>
+                <div class="metric"><div class="label">安全状态</div><div class="value small" id="safetyState">--</div><div class="label" id="lastAction">action --</div></div>
               </div>
-              <div class="flow-preview">
-                <div class="control-state"><span>电机轨道</span><strong id="bubbleMotorTimeline">--</strong></div>
-                <div class="control-state"><span>烟雾轨道</span><strong id="bubbleFogTimeline">--</strong></div>
-                <div class="control-state"><span>风扇轨道</span><strong id="bubbleFanTimeline">--</strong></div>
-                <div class="control-state"><span>灯光轨道</span><strong id="bubbleLightTimeline">--</strong></div>
+            </section>
+            <section>
+              <div class="section-head"><h2>震动触发</h2><span id="vibrationSource" class="pill neutral">等待震动板</span></div>
+              <div class="metric-grid four">
+                <div class="metric"><div class="label">震动状态</div><div class="value small" id="vibrationState">--</div><div class="label" id="vibrationDetail">ESP32-S3</div></div>
+                <div class="metric"><div class="label">触发次数</div><div class="value small" id="vibrationCount">--</div><div class="label">等同泡泡按钮</div></div>
+                <div class="metric"><div class="label">距上一次</div><div class="value small" id="vibrationLast">--</div><div class="label">震动触发</div></div>
+                <div class="metric"><div class="label">泡泡流程</div><div class="value small" id="bubbleState">--</div><div class="label" id="bubbleDetail">--</div></div>
               </div>
-              <div class="button-row single">
-                <button data-action="bubble_config">保存并行配置</button>
-              </div>
-            </div>
-            <div class="control-block">
-              <div class="control-title"><h2>灯光状态</h2><span id="lightMood" class="pill neutral">手动</span></div>
               <div class="control-status single">
-                <div class="control-state"><span>当前状态</span><strong id="lightCurrentState">--</strong></div>
-              </div>
-              <div class="mood-grid">
-                <button class="mood-button" data-action="light_auto" style="--mood: linear-gradient(135deg, #d8dde6, #78c6b8);"><span>自动</span><small>脑电</small></button>
-                <button class="mood-button" data-action="light_color" data-color="#ff5cc8" data-white="18" style="--mood: linear-gradient(135deg, #ff5cc8, #8d5cff);"><span>粉紫</span><small>冥想</small></button>
-                <button class="mood-button" data-action="light_color" data-color="#20c7bd" data-white="8" style="--mood: linear-gradient(135deg, #20c7bd, #2878ff);"><span>蓝绿</span><small>平静</small></button>
-                <button class="mood-button" data-action="light_color" data-color="#4b7dff" data-white="0" style="--mood: linear-gradient(135deg, #4b7dff, #245cff);"><span>蓝紫</span><small>专注</small></button>
-                <button class="mood-button" data-action="light_color" data-color="#ff8a4c" data-white="12" style="--mood: linear-gradient(135deg, #ff8a4c, #ff5fb1);"><span>琥珀</span><small>唤醒</small></button>
-                <button class="mood-button" data-action="light_color" data-color="#294fcf" data-white="0" style="--mood: linear-gradient(135deg, #294fcf, #1dd6c9);"><span>深海</span><small>入梦</small></button>
-              </div>
-              <div class="button-row single">
-                <button data-action="light_off">灯光关闭</button>
-              </div>
-            </div>
-            <div class="control-block">
-              <div class="control-title"><h2>烟雾机 / 风扇</h2><span id="relayHint" class="pill neutral">--</span></div>
-              <div class="device-control-grid">
-                <div class="device-control">
-                  <div class="control-state"><span>烟雾机当前</span><strong id="fogCurrentState">--</strong></div>
-                  <div class="button-row two">
-                    <button class="good" data-action="relay_on">开启</button>
-                    <button data-action="relay_off">停止</button>
-                  </div>
-                </div>
-                <div class="device-control">
-                  <div class="control-state"><span>风扇当前</span><strong id="fanCurrentState">--</strong></div>
-                  <div class="button-row two">
-                    <button class="good" data-action="fan_on">开启</button>
-                    <button data-action="fan_off">停止</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div class="control-block">
-              <div class="control-title"><h2>步进电机</h2><span id="stepperHint" class="pill neutral">--</span></div>
-              <div class="step-row">
-                <span class="label">圈数</span>
-                <input id="stepperTurns" type="number" min="0.1" max="20" step="0.1" value="1" aria-label="步进电机圈数">
-                <span class="label" id="stepperStepsPreview">1600 步</span>
-              </div>
-              <div class="button-row">
-                <button class="primary" data-action="stepper_forward" data-turns="1">正转一圈</button>
-                <button class="primary" data-action="stepper_backward" data-turns="1">反转一圈</button>
-                <button data-action="stepper_stop">停止电机</button>
+                <div class="control-state"><span>震动触发开关</span><strong id="vibrationMode">--</strong></div>
               </div>
               <div class="button-row two">
-                <button class="primary" data-action="stepper_forward">正转指定圈数</button>
-                <button class="primary" data-action="stepper_backward">反转指定圈数</button>
+                <button class="good" data-action="vibration_enable">启用震动触发</button>
+                <button data-action="vibration_disable">停用震动触发</button>
               </div>
+            </section>
+            <section>
+              <div class="section-head"><h2>链路统计</h2><span id="m5Age" class="pill neutral">-- ms</span></div>
+              <div class="metric-grid four">
+                <div class="metric"><div class="label">电脑发送帧</div><div class="value small" id="sentFrames">--</div><div class="label">USB -> M5</div></div>
+                <div class="metric"><div class="label">ThinkGear 有效包</div><div class="value small" id="validPackets">--</div><div class="label" id="checksumErrors">checksum --</div></div>
+                <div class="metric"><div class="label">M5 ESP-NOW</div><div class="value small" id="espNowStats">--</div><div class="label" id="m5Command">cmd --</div></div>
+                <div class="metric"><div class="label">MIC 收包</div><div class="value small" id="micPackets">--</div><div class="label" id="micControl">control --</div></div>
+              </div>
+            </section>
+          </div>
+          <div class="stack">
+            <section class="control-panel">
+              <div class="section-head"><h2>现场控制</h2></div>
+              <div class="button-row two">
+                <button class="good" data-action="system_enable">系统开启</button>
+                <button class="danger" data-action="system_disable">系统关闭</button>
+              </div>
+              <div class="button-row single">
+                <button class="primary" data-action="bubble_trigger">保存并触发流程</button>
+              </div>
+              <div class="control-block">
+                <div class="control-title"><h2>泡泡并行流程</h2><span id="bubbleConfigSummary" class="pill neutral">默认</span></div>
+                <div class="library-row">
+                  <label class="flow-field"><span>配置列表</span><select id="bubbleConfigSelect"></select></label>
+                  <label class="flow-field"><span>配置名称</span><input id="bubbleConfigName" type="text" maxlength="60" value=""></label>
+                </div>
+                <div class="editor-actions">
+                  <button id="bubbleConfigNew" type="button">新建</button>
+                  <button id="bubbleConfigSave" type="button">保存</button>
+                  <button id="bubbleConfigRename" type="button">重命名</button>
+                  <button id="bubbleConfigDelete" class="danger" type="button">删除</button>
+                </div>
+                <div class="flow-grid">
+                  <label class="flow-field"><span>反拉电机圈数</span><small>触发后立即启动</small><input class="bubble-config-input" id="bubbleReverseTurns" type="number" min="0" max="20" step="0.1" value="1"></label>
+                  <label class="flow-field"><span>烟雾开启时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleFogStartSec" type="number" min="0" max="60" step="0.1" value="1.0"></label>
+                  <label class="flow-field"><span>风扇/灯光开启时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleFanLightStartSec" type="number" min="0" max="60" step="0.1" value="5.0"></label>
+                  <label class="flow-field"><span>回推启动时间 秒</span><small>相对反转开始；会等待反转完成</small><input class="bubble-config-input" id="bubbleForwardStartSec" type="number" min="0" max="60" step="0.1" value="9.0"></label>
+                  <label class="flow-field"><span>回推电机圈数</span><small>反拉完成后才会执行</small><input class="bubble-config-input" id="bubbleForwardTurns" type="number" min="0" max="20" step="0.1" value="1"></label>
+                  <label class="flow-field"><span>烟雾关闭时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleFogStopSec" type="number" min="0" max="60" step="0.1" value="12.7"></label>
+                  <label class="flow-field"><span>风扇关闭时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleFanStopSec" type="number" min="0" max="60" step="0.1" value="13.7"></label>
+                  <label class="flow-field"><span>灯光关闭时间 秒</span><small>相对反转开始 0.0 秒</small><input class="bubble-config-input" id="bubbleLightStopSec" type="number" min="0" max="60" step="0.1" value="16.7"></label>
+                </div>
+                <div class="flow-preview">
+                  <div class="control-state"><span>电机轨道</span><strong id="bubbleMotorTimeline">--</strong></div>
+                  <div class="control-state"><span>烟雾轨道</span><strong id="bubbleFogTimeline">--</strong></div>
+                  <div class="control-state"><span>风扇轨道</span><strong id="bubbleFanTimeline">--</strong></div>
+                  <div class="control-state"><span>灯光轨道</span><strong id="bubbleLightTimeline">--</strong></div>
+                </div>
+                <div class="button-row single">
+                  <button data-action="bubble_config">仅下发当前流程配置</button>
+                </div>
+              </div>
+              <div class="control-block">
+                <div class="control-title"><h2>烟雾机 / 风扇</h2><span id="relayHint" class="pill neutral">--</span></div>
+                <div class="device-control-grid">
+                  <div class="device-control">
+                    <div class="control-state"><span>烟雾机当前</span><strong id="fogCurrentState">--</strong></div>
+                    <div class="button-row two">
+                      <button class="good" data-action="relay_on">开启</button>
+                      <button data-action="relay_off">停止</button>
+                    </div>
+                  </div>
+                  <div class="device-control">
+                    <div class="control-state"><span>风扇当前</span><strong id="fanCurrentState">--</strong></div>
+                    <div class="button-row two">
+                      <button class="good" data-action="fan_on">开启</button>
+                      <button data-action="fan_off">停止</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="control-block">
+                <div class="control-title"><h2>步进电机</h2><span id="stepperHint" class="pill neutral">--</span></div>
+                <div class="step-row">
+                  <span class="label">圈数</span>
+                  <input id="stepperTurns" type="number" min="0.1" max="20" step="0.1" value="1" aria-label="步进电机圈数">
+                  <span class="label" id="stepperStepsPreview">1600 步</span>
+                </div>
+                <div class="button-row">
+                  <button class="primary" data-action="stepper_forward" data-turns="1">正转一圈</button>
+                  <button class="primary" data-action="stepper_backward" data-turns="1">反转一圈</button>
+                  <button data-action="stepper_stop">停止电机</button>
+                </div>
+                <div class="button-row two">
+                  <button class="primary" data-action="stepper_forward">正转指定圈数</button>
+                  <button class="primary" data-action="stepper_backward">反转指定圈数</button>
+                </div>
+              </div>
+              <div id="notice" class="notice">等待真实串口连接。</div>
+            </section>
+            <section>
+              <div class="section-head"><h2>事件日志</h2><button id="clearLog">清空本地显示</button></div>
+              <div id="log" class="log">等待真实事件...</div>
+            </section>
+            <section>
+              <div class="section-head"><h2>震动记录</h2><span id="vibrationHistoryCount" class="pill neutral">0 条</span></div>
+              <div id="vibrationHistory" class="history-list">
+                <div class="history-item"><span>--:--:--</span><strong>等待震动触发</strong><span>count --</span></div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section id="paletteView" class="view-panel" hidden>
+        <div class="mode-grid">
+          <section class="control-panel">
+            <div class="section-head"><h2>灯光模式</h2><span id="lightMood" class="pill neutral">自动切换</span></div>
+            <div class="control-status single">
+              <div class="control-state"><span>当前状态</span><strong id="lightCurrentState">--</strong></div>
             </div>
-            <div id="notice" class="notice">等待真实串口连接。</div>
-          </section>
-          <section>
-            <div class="section-head"><h2>事件日志</h2><button id="clearLog">清空本地显示</button></div>
-            <div id="log" class="log">等待真实事件...</div>
-          </section>
-          <section>
-            <div class="section-head"><h2>震动记录</h2><span id="vibrationHistoryCount" class="pill neutral">0 条</span></div>
-            <div id="vibrationHistory" class="history-list">
-              <div class="history-item"><span>--:--:--</span><strong>等待震动触发</strong><span>count --</span></div>
+            <div class="segmented three">
+              <button data-light-strategy="eeg_realtime">脑电实时</button>
+              <button data-light-strategy="palette_random">色板随机</button>
+              <button data-light-strategy="auto">自动切换</button>
             </div>
+            <div class="control-status single">
+              <div class="control-state is-hint"><span>切换说明</span><strong id="lightStrategyHint">色板随机和自动切换可先保存，板端连接后同步。</strong></div>
+            </div>
+            <div class="button-row two">
+              <button id="testEegLightColor" type="button">测试脑电灯光颜色</button>
+              <button data-action="light_off">灯光关闭</button>
+            </div>
+            <div class="test-swatch" id="eegTestSwatch"></div>
+          </section>
+          <section class="control-panel">
+            <div class="section-head"><h2>色板容器</h2><span id="paletteStatus" class="pill neutral">--</span></div>
+            <div class="button-row two">
+              <button id="paletteNew" type="button">新建色板</button>
+              <button id="paletteDelete" class="danger" type="button">删除当前色板</button>
+            </div>
+            <select id="paletteSelect" hidden></select>
+            <div id="paletteList" class="palette-list"></div>
+            <details id="paletteEditor" class="palette-editor">
+              <summary>编辑当前色板</summary>
+              <div class="palette-editor-body">
+                <label class="flow-field"><span>色板名称</span><input id="paletteName" type="text" maxlength="60" value="Dream 默认色板"></label>
+                <div class="palette-preview" id="palettePreview"></div>
+                <div class="flow-grid">
+                  <label class="flow-field"><span>两灯时间差 秒</span><input id="paletteOffsetSec" type="number" min="0" max="60" step="0.1" value="1.0"></label>
+                  <label class="flow-field"><span>流水灯周期 秒</span><input id="paletteFlowSec" type="number" min="0.5" max="60" step="0.1" value="6.0"></label>
+                </div>
+                <div id="paletteStops" class="metric-grid"></div>
+                <div class="editor-actions">
+                  <button id="paletteSave" type="button">保存</button>
+                  <button id="paletteRename" type="button">重命名</button>
+                  <button id="paletteAddStop" type="button">增加色标</button>
+                  <button id="paletteCloseEditor" type="button">收起</button>
+                </div>
+              </div>
+            </details>
           </section>
         </div>
-      </div>
+      </section>
     </main>
   </div>
   <script>
@@ -759,6 +1007,9 @@ INDEX_HTML = r"""<!doctype html>
     let latestFanOn = false;
     let latestVibrationEnabled = true;
     let lastVibrationTriggerCount = null;
+    let configStore = null;
+    let paletteDraft = null;
+    let configStoreSignature = "";
     const vibrationHistory = [];
     const STEPPER_SINGLE_TARGET = 1;
     const BUBBLE_CONFIG_INPUT_IDS = [
@@ -794,6 +1045,16 @@ INDEX_HTML = r"""<!doctype html>
     document.querySelectorAll("[id]").forEach((el) => ids[el.id] = el);
     document.querySelectorAll("button[data-action], #clearLog").forEach((button) => buttonLabels.set(button, button.textContent));
     const lightPresetButtons = Array.from(document.querySelectorAll(".mood-button"));
+    const runModeButtons = Array.from(document.querySelectorAll("[data-run-mode]"));
+    const lightStrategyButtons = Array.from(document.querySelectorAll("[data-light-strategy]"));
+    const lightOffButton = document.querySelector("[data-action='light_off']");
+    const viewButtons = Array.from(document.querySelectorAll("[data-view]"));
+    const viewPanels = Array.from(document.querySelectorAll(".view-panel"));
+    const LIGHT_STRATEGY_LABELS = {
+      eeg_realtime: "脑电实时",
+      palette_random: "色板随机",
+      auto: "自动切换"
+    };
 
     const setText = (id, value) => { ids[id].textContent = value ?? "--"; };
     const realText = (seen, value, suffix = "") => seen && value !== undefined && value !== null ? `${value}${suffix}` : "--";
@@ -813,18 +1074,54 @@ INDEX_HTML = r"""<!doctype html>
       el.className = "pill " + state;
       el.textContent = text;
     };
+    const lightStrategyLabel = (strategy) => LIGHT_STRATEGY_LABELS[strategy] || LIGHT_STRATEGY_LABELS.auto;
+    const RUN_MODE_LABELS = {
+      with_eeg: "有脑电",
+      no_eeg: "无脑电"
+    };
+    const applyRunModeSelection = (runMode = "with_eeg", pending = false) => {
+      const normalized = RUN_MODE_LABELS[runMode] ? runMode : "with_eeg";
+      runModeButtons.forEach((button) => {
+        button.classList.toggle("is-selected", button.dataset.runMode === normalized);
+        button.disabled = pending;
+      });
+      pill(
+        ids.runModePill,
+        pending ? "warn" : (normalized === "with_eeg" ? "ok" : "neutral"),
+        pending ? "保存中" : RUN_MODE_LABELS[normalized]
+      );
+    };
+    const applyLightStrategySelection = (strategy = "auto") => {
+      lightStrategyButtons.forEach((button) => {
+        button.classList.toggle("is-selected", button.dataset.lightStrategy === strategy);
+      });
+      pill(ids.lightMood, strategy === "eeg_realtime" ? "ok" : (strategy === "palette_random" ? "neutral" : "warn"), lightStrategyLabel(strategy));
+    };
     const setNotice = (text) => {
       localNotice = text;
       ids.notice.textContent = text;
     };
     const normalizeHex = (value) => value && value.startsWith("#") ? value : `#${value || "000000"}`;
-    const selectLightPreset = (button) => {
-      lightPresetButtons.forEach((item) => item.classList.toggle("is-selected", item === button));
-      if (button) {
-        setText("lightMood", button.querySelector("span")?.textContent || "手动");
-      } else {
-        setText("lightMood", "手动");
-      }
+    const escapeHtml = (text) => String(text ?? "").replace(/[&<>"']/g, (ch) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"}[ch]));
+    const clamp = (value, min, max, fallback = min) => {
+      const number = Number(value);
+      return Math.max(min, Math.min(max, Number.isFinite(number) ? number : fallback));
+    };
+    const selectedPalette = () => {
+      if (!configStore?.palettes?.length) return null;
+      return configStore.palettes.find((item) => item.id === configStore.app.selectedPaletteId) || configStore.palettes[0];
+    };
+    const selectedBubbleConfig = () => {
+      if (!configStore?.bubbleConfigs?.length) return null;
+      return configStore.bubbleConfigs.find((item) => item.id === configStore.app.selectedBubbleConfigId) || null;
+    };
+    const editingConfigInput = () => {
+      const active = document.activeElement;
+      return Boolean(active && (active.closest("#paletteEditor") || active.id?.startsWith("bubbleConfig")));
+    };
+    const showView = (viewId) => {
+      viewPanels.forEach((panel) => panel.hidden = panel.id !== viewId);
+      viewButtons.forEach((button) => button.classList.toggle("is-selected", button.dataset.view === viewId));
     };
     const stepperTurns = (trigger) => {
       const raw = Number(trigger?.dataset.turns || ids.stepperTurns.value || 1);
@@ -876,6 +1173,138 @@ INDEX_HTML = r"""<!doctype html>
       setText("bubbleFogTimeline", `${timelineLabel(config.fogStartSec)}s 开；${timelineLabel(config.fogStopSec)}s 关`);
       setText("bubbleFanTimeline", `${timelineLabel(config.fanLightStartSec)}s 开；${timelineLabel(config.fanStopSec)}s 关`);
       setText("bubbleLightTimeline", `${timelineLabel(config.fanLightStartSec)}s 开；${timelineLabel(config.lightStopSec)}s 关`);
+    };
+    const applyBubbleValues = (values) => {
+      if (!values) return;
+      ids.bubbleReverseTurns.value = values.reverseTurns ?? 1;
+      ids.bubbleForwardTurns.value = values.forwardTurns ?? 1;
+      ids.bubbleFogStartSec.value = Number(values.fogStartSec ?? 1).toFixed(1);
+      ids.bubbleFanLightStartSec.value = Number(values.fanLightStartSec ?? 5).toFixed(1);
+      ids.bubbleForwardStartSec.value = Number(values.forwardStartSec ?? 9).toFixed(1);
+      ids.bubbleFogStopSec.value = Number(values.fogStopSec ?? 12.7).toFixed(1);
+      ids.bubbleFanStopSec.value = Number(values.fanStopSec ?? 13.7).toFixed(1);
+      ids.bubbleLightStopSec.value = Number(values.lightStopSec ?? 16.7).toFixed(1);
+      updateBubbleConfigPreview();
+    };
+    const paletteGradient = (palette) => {
+      const stops = [...(palette?.stops || [])].sort((a, b) => a.position - b.position);
+      if (!stops.length) return "linear-gradient(90deg, #4b7dff, #20c7bd)";
+      return `linear-gradient(90deg, ${stops.map((stop) => `${stop.color} ${stop.position}%`).join(", ")})`;
+    };
+    const nextPaletteName = () => {
+      const existing = new Set((configStore?.palettes || []).map((item) => item.name));
+      let index = (configStore?.palettes?.length || 0) + 1;
+      let name = `新色板 ${index}`;
+      while (existing.has(name)) {
+        index += 1;
+        name = `新色板 ${index}`;
+      }
+      return name;
+    };
+    const currentPaletteDraft = () => {
+      const stops = Array.from(document.querySelectorAll(".palette-stop")).map((row) => ({
+        position: Math.round(clamp(row.querySelector("[data-stop-position]").value, 0, 100, 0)),
+        color: normalizeHex(row.querySelector("[data-stop-color]").value),
+        white: Math.round(clamp(row.querySelector("[data-stop-white]").value, 0, 255, 0))
+      })).sort((a, b) => a.position - b.position);
+      return {
+        id: ids.paletteSelect.value || paletteDraft?.id || "",
+        name: ids.paletteName.value.trim() || "未命名色板",
+        stops: stops.length ? stops : [{position: 0, color: "#4b7dff", white: 0}, {position: 100, color: "#ff5cc8", white: 0}],
+        twoLightOffsetSec: Math.round(clamp(ids.paletteOffsetSec.value, 0, 60, 1) * 10) / 10,
+        flowPeriodSec: Math.round(clamp(ids.paletteFlowSec.value, 0.5, 60, 6) * 10) / 10
+      };
+    };
+    const renderPaletteStops = (palette) => {
+      ids.paletteStops.innerHTML = "";
+      (palette?.stops || []).forEach((stop) => {
+        const row = document.createElement("div");
+        row.className = "palette-stop";
+        row.innerHTML = `
+          <input data-stop-position type="number" min="0" max="100" step="1" value="${Number(stop.position || 0)}" aria-label="色标位置">
+          <input data-stop-color type="color" value="${escapeHtml(stop.color || "#4b7dff")}" aria-label="色标颜色">
+          <input data-stop-white type="number" min="0" max="255" step="1" value="${Number(stop.white || 0)}" aria-label="白光">
+          <button type="button" title="删除色标">×</button>
+        `;
+        row.querySelector("button").addEventListener("click", () => {
+          row.remove();
+          ids.palettePreview.style.background = paletteGradient(currentPaletteDraft());
+        });
+        row.querySelectorAll("input").forEach((input) => input.addEventListener("input", () => {
+          ids.palettePreview.style.background = paletteGradient(currentPaletteDraft());
+        }));
+        ids.paletteStops.appendChild(row);
+      });
+      ids.palettePreview.style.background = paletteGradient(palette);
+    };
+    const renderPaletteList = (store) => {
+      if (!ids.paletteList) return;
+      const selectedId = store?.app?.selectedPaletteId || "";
+      ids.paletteList.innerHTML = (store?.palettes || []).map((item) => {
+        const selected = item.id === selectedId;
+        return `
+          <button class="palette-list-item ${selected ? "is-selected" : ""}" type="button" data-palette-id="${escapeHtml(item.id)}">
+            <span class="palette-mini" style="background: ${escapeHtml(paletteGradient(item))}"></span>
+            <span class="palette-list-copy">
+              <strong>${escapeHtml(item.name)}</strong>
+              <small>${(item.stops || []).length} 个色标 · 差 ${Number(item.twoLightOffsetSec || 0).toFixed(1)}s · 周期 ${Number(item.flowPeriodSec || 0).toFixed(1)}s</small>
+            </span>
+            <span class="pill ${selected ? "ok" : "neutral"}">${selected ? "当前" : "选择"}</span>
+          </button>
+        `;
+      }).join("");
+      ids.paletteList.querySelectorAll("[data-palette-id]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          try {
+            await postConfig({kind: "palette", action: "select", id: button.dataset.paletteId});
+            ids.paletteEditor.open = false;
+          } catch (error) {
+            setNotice(`色板加载失败：${error.message || error}`);
+          }
+        });
+      });
+    };
+    const renderConfigStore = (store, keepDraft = false) => {
+      if (!store) return;
+      configStore = store;
+      const palette = keepDraft && paletteDraft ? paletteDraft : selectedPalette();
+      paletteDraft = JSON.parse(JSON.stringify(palette || {}));
+      ids.paletteSelect.innerHTML = (store.palettes || []).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+      ids.paletteSelect.value = store.app.selectedPaletteId || palette?.id || "";
+      renderPaletteList(store);
+      ids.paletteName.value = palette?.name || "";
+      ids.paletteOffsetSec.value = Number(palette?.twoLightOffsetSec ?? 1).toFixed(1);
+      ids.paletteFlowSec.value = Number(palette?.flowPeriodSec ?? 6).toFixed(1);
+      renderPaletteStops(palette);
+      pill(ids.paletteStatus, "ok", palette?.name || "--");
+
+      ids.bubbleConfigSelect.innerHTML = '<option value="">未选择</option>' + (store.bubbleConfigs || []).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+      ids.bubbleConfigSelect.value = store.app.selectedBubbleConfigId || "";
+      const bubble = selectedBubbleConfig();
+      ids.bubbleConfigName.value = bubble?.name || "";
+      if (bubble) applyBubbleValues(bubble.values);
+      pill(ids.bubbleLibraryStatus, bubble ? "ok" : "neutral", bubble ? bubble.name : "未选择");
+
+      const runMode = store.app.runMode || "with_eeg";
+      applyRunModeSelection(runMode);
+      const strategy = store.app.lightStrategy || "auto";
+      applyLightStrategySelection(strategy);
+    };
+    const postConfig = async (payload) => {
+      const response = await fetch("/api/config", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || response.status);
+      renderConfigStore(data.store);
+      if (data.warnings?.length) {
+        setNotice(`配置已保存；板端同步等待串口：${data.warnings[0]}`);
+      } else {
+        setNotice("配置已保存并同步。");
+      }
+      return data;
     };
     const commandArgs = (action, trigger) => {
       if (action === "light_color") {
@@ -971,6 +1400,51 @@ INDEX_HTML = r"""<!doctype html>
         if (ids[id]) ids[id].disabled = bubbleActive;
       });
     };
+    const setLightModeAvailability = (state, commandReady, micSeen) => {
+      const runMode = configStore?.app?.runMode || "with_eeg";
+      const eegUsable = Boolean(state?.eeg?.usable);
+      const eegDiagnosis = state?.eeg?.diagnosis || "脑电信号不可用";
+      lightStrategyButtons.forEach((button) => {
+        const strategy = button.dataset.lightStrategy;
+        const blocked = strategy === "eeg_realtime" && runMode === "no_eeg";
+        button.disabled = blocked;
+        button.title = blocked
+          ? "当前整体模式是无脑电，不能选择脑电实时。"
+          : "灯光策略会先保存到本地配置；板端连接后会同步。";
+      });
+      if (ids.testEegLightColor) {
+        let reason = "";
+        if (!eegUsable) {
+          reason = eegDiagnosis;
+        } else if (!commandReady) {
+          reason = "等待 M5Stack 串口打开后才能下发测试灯色。";
+        }
+        ids.testEegLightColor.disabled = Boolean(reason);
+        ids.testEegLightColor.title = reason || "根据当前脑电和当前色板，下发一次灯光颜色测试。";
+      }
+      if (lightOffButton) {
+        let offReason = "";
+        if (!commandReady) {
+          offReason = "等待 M5Stack 串口打开后才能关闭灯光。";
+        } else if (!micSeen) {
+          offReason = "等待 Microduino 状态回传后才能关闭灯光。";
+        } else if (!state?.mic?.systemEnabled) {
+          offReason = "系统关闭状态下无需再次关闭灯光。";
+        }
+        lightOffButton.title = offReason || "向 Microduino 下发灯光关闭命令。";
+      }
+      let hint = "";
+      if (runMode === "no_eeg") {
+        hint = "无脑电模式下脑电实时不可选；色板随机和自动切换可先保存，板端连接后同步。";
+      } else if (!eegUsable) {
+        hint = `有脑电模式，但当前${eegDiagnosis}；自动切换会在不可用时走色板随机。`;
+      } else if (!commandReady) {
+        hint = "脑电信号可用；当前 M5Stack 串口未打开，策略会先保存到本地配置。";
+      } else {
+        hint = "脑电信号可用；策略切换会保存并同步到板端。";
+      }
+      setText("lightStrategyHint", hint);
+    };
     const renderLogs = (logs) => {
       if (suppressLogRender) return;
       if (logs && logs.length) {
@@ -1022,13 +1496,6 @@ INDEX_HTML = r"""<!doctype html>
     const sendCommand = async (button) => {
       const action = button.dataset.action;
       const label = buttonLabels.get(button) || action;
-      if (action === "light_auto") {
-        selectLightPreset(button);
-      } else if (action === "light_color" && button.dataset.color) {
-        selectLightPreset(button);
-      } else if (action === "light_color" || action === "light_off") {
-        selectLightPreset(null);
-      }
       setButtonPending(button, true);
       setCommandFeedback("warn", "发送中", 30000);
       setNotice(`正在发送：${label}`);
@@ -1052,6 +1519,154 @@ INDEX_HTML = r"""<!doctype html>
     };
     document.querySelectorAll("button[data-action]").forEach((button) => {
       button.addEventListener("click", () => sendCommand(button));
+    });
+    viewButtons.forEach((button) => {
+      button.addEventListener("click", () => showView(button.dataset.view));
+    });
+    document.querySelectorAll("[data-view-jump]").forEach((button) => {
+      button.addEventListener("click", () => showView(button.dataset.viewJump));
+    });
+    runModeButtons.forEach((button) => {
+      button.addEventListener("click", async () => {
+        const nextRunMode = button.dataset.runMode;
+        const previousRunMode = configStore?.app?.runMode;
+        if (configStore && nextRunMode === previousRunMode) {
+          applyRunModeSelection(nextRunMode);
+          return;
+        }
+        applyRunModeSelection(nextRunMode, true);
+        setNotice(`整体运行模式已选择：${RUN_MODE_LABELS[nextRunMode] || nextRunMode}。正在保存配置...`);
+        try {
+          await postConfig({kind: "app", action: "update", app: {runMode: nextRunMode}});
+        } catch (error) {
+          applyRunModeSelection(previousRunMode || "with_eeg");
+          setNotice(`整体模式保存失败：${error.message || error}`);
+        }
+      });
+    });
+    lightStrategyButtons.forEach((button) => {
+      button.addEventListener("click", async () => {
+        const strategy = button.dataset.lightStrategy;
+        if (strategy === "eeg_realtime" && configStore?.app?.runMode === "no_eeg") {
+          setNotice("无脑电整体模式下不能使用脑电实时灯光。");
+          return;
+        }
+        const previousStrategy = configStore?.app?.lightStrategy || "auto";
+        applyLightStrategySelection(strategy);
+        setNotice(`灯光模式已选择：${lightStrategyLabel(strategy)}。正在保存配置...`);
+        try {
+          await postConfig({kind: "app", action: "update", app: {lightStrategy: strategy}});
+        } catch (error) {
+          applyLightStrategySelection(previousStrategy);
+          setNotice(`灯光模式保存失败：${error.message || error}`);
+        }
+      });
+    });
+    ids.paletteSelect.addEventListener("change", async () => {
+      try {
+        await postConfig({kind: "palette", action: "select", id: ids.paletteSelect.value});
+      } catch (error) {
+        setNotice(`色板加载失败：${error.message || error}`);
+      }
+    });
+    ids.paletteAddStop.addEventListener("click", () => {
+      const palette = currentPaletteDraft();
+      palette.stops.push({position: 50, color: "#ffffff", white: 0});
+      renderPaletteStops(palette);
+    });
+    ids.paletteNew.addEventListener("click", async () => {
+      try {
+        const item = {
+          name: nextPaletteName(),
+          stops: [
+            {position: 0, color: "#4b7dff", white: 0},
+            {position: 100, color: "#ff5cc8", white: 0}
+          ],
+          twoLightOffsetSec: 1.0,
+          flowPeriodSec: 6.0
+        };
+        await postConfig({kind: "palette", action: "create", item});
+        ids.paletteEditor.open = true;
+        setNotice(`已新建：${item.name}`);
+      } catch (error) {
+        setNotice(`新建色板失败：${error.message || error}`);
+      }
+    });
+    ids.paletteSave.addEventListener("click", async () => {
+      try {
+        await postConfig({kind: "palette", action: "save", id: ids.paletteSelect.value, item: currentPaletteDraft()});
+      } catch (error) {
+        setNotice(`色板保存失败：${error.message || error}`);
+      }
+    });
+    ids.paletteRename.addEventListener("click", async () => {
+      try {
+        await postConfig({kind: "palette", action: "rename", id: ids.paletteSelect.value, name: ids.paletteName.value.trim()});
+      } catch (error) {
+        setNotice(`色板重命名失败：${error.message || error}`);
+      }
+    });
+    ids.paletteDelete.addEventListener("click", async () => {
+      try {
+        await postConfig({kind: "palette", action: "delete", id: ids.paletteSelect.value});
+        ids.paletteEditor.open = false;
+      } catch (error) {
+        setNotice(`色板删除失败：${error.message || error}`);
+      }
+    });
+    ids.paletteCloseEditor.addEventListener("click", () => {
+      ids.paletteEditor.open = false;
+    });
+    ids.bubbleConfigSelect.addEventListener("change", async () => {
+      try {
+        await postConfig({kind: "bubble", action: "select", id: ids.bubbleConfigSelect.value, sync: false});
+      } catch (error) {
+        setNotice(`泡泡配置加载失败：${error.message || error}`);
+      }
+    });
+    ids.bubbleConfigNew.addEventListener("click", async () => {
+      try {
+        await postConfig({kind: "bubble", action: "create", item: {name: ids.bubbleConfigName.value.trim() || "新泡泡流程", values: bubbleConfigValues()}, sync: false});
+      } catch (error) {
+        setNotice(`新建泡泡配置失败：${error.message || error}`);
+      }
+    });
+    ids.bubbleConfigSave.addEventListener("click", async () => {
+      try {
+        const id = ids.bubbleConfigSelect.value;
+        if (!id) {
+          await postConfig({kind: "bubble", action: "create", item: {name: ids.bubbleConfigName.value.trim() || "新泡泡流程", values: bubbleConfigValues()}, sync: false});
+        } else {
+          await postConfig({kind: "bubble", action: "save", id, item: {id, name: ids.bubbleConfigName.value.trim() || "未命名泡泡流程", values: bubbleConfigValues()}, sync: false});
+        }
+      } catch (error) {
+        setNotice(`泡泡配置保存失败：${error.message || error}`);
+      }
+    });
+    ids.bubbleConfigRename.addEventListener("click", async () => {
+      try {
+        await postConfig({kind: "bubble", action: "rename", id: ids.bubbleConfigSelect.value, name: ids.bubbleConfigName.value.trim(), sync: false});
+      } catch (error) {
+        setNotice(`泡泡配置重命名失败：${error.message || error}`);
+      }
+    });
+    ids.bubbleConfigDelete.addEventListener("click", async () => {
+      try {
+        await postConfig({kind: "bubble", action: "delete", id: ids.bubbleConfigSelect.value, sync: false});
+      } catch (error) {
+        setNotice(`泡泡配置删除失败：${error.message || error}`);
+      }
+    });
+    ids.testEegLightColor.addEventListener("click", async () => {
+      try {
+        const response = await fetch("/api/eeg-light-test");
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || response.status);
+        ids.eegTestSwatch.style.background = data.color.hex;
+        setNotice(`测试色：${data.color.hex}，attention ${data.color.attention} / meditation ${data.color.meditation}`);
+      } catch (error) {
+        setNotice(`不可测试脑电灯光：${error.message || error}`);
+      }
     });
     ids.clearLog.addEventListener("click", () => {
       suppressLogRender = true;
@@ -1083,6 +1698,11 @@ INDEX_HTML = r"""<!doctype html>
       const fogOn = Boolean(micSeen && state.mic.relayState === 2);
       const fanOn = Boolean(micSeen && state.mic.fanState === 2);
       const relayOutputEnabled = Boolean(micSeen && state.mic.relayOutputEnabled);
+      const storeSignature = JSON.stringify(state.store || {});
+      if (state.store && storeSignature !== configStoreSignature && !editingConfigInput()) {
+        configStoreSignature = storeSignature;
+        renderConfigStore(state.store);
+      }
       latestM5Seen = m5Seen;
       latestVibrationEnabled = vibrationEnabled;
       pill(ids.webStatus, "ok", "已连接");
@@ -1091,6 +1711,7 @@ INDEX_HTML = r"""<!doctype html>
       pill(ids.micStatus, micSeen ? "ok" : "warn", micSeen ? "在线" : "等待");
       pill(ids.vibrationStatus, vibrationSeen ? "ok" : "warn", vibrationSeen ? "在线" : (m5Seen ? "等待" : "M5等待"));
       pill(ids.eegStatus, eegSeen ? (state.eeg.ageMs < 1200 ? "ok" : "warn") : "warn", eegSeen ? "真实数据" : "等待脑电");
+      setText("eegDiagnosis", state.eeg.diagnosis || "--");
       pill(ids.systemEnabled, micSeen ? (state.mic.systemEnabled ? "ok" : "bad") : "neutral", micSeen ? (state.mic.systemEnabled ? "系统已开启" : "系统关闭") : "--");
       setCommandReady(commandReady);
       setControlAvailability(commandReady, micSeen, Boolean(state.mic.systemEnabled), bubbleActive, relayOutputEnabled, fogOn, fanOn);
@@ -1116,6 +1737,7 @@ INDEX_HTML = r"""<!doctype html>
       setText("lightLevel", micSeen ? `level ${state.mic.lightLevel} L1 ${rgbwText(state.mic.light1Rgbw)} L2 ${rgbwText(state.mic.light2Rgbw)}` : "level --");
       setText("relayState", micSeen ? `雾 ${modeText(true, relayStates, state.mic.relayState)} / 风 ${modeText(true, relayStates, state.mic.fanState)}` : "--");
       setText("lightCurrentState", onOffText(micSeen, state.mic.lightLevel > 0, modeText(micSeen, lightModes, state.mic.lightMode)));
+      setLightModeAvailability(state, commandReady, micSeen);
       setText("fogCurrentState", onOffText(micSeen, fogOn, modeText(micSeen, relayStates, state.mic.relayState)));
       setText("fanCurrentState", onOffText(micSeen, fanOn, modeText(micSeen, relayStates, state.mic.fanState)));
       setText("stepperState", modeText(micSeen, stepperStates, state.mic.stepperState));
@@ -1247,6 +1869,7 @@ class MicStatus:
     relay_output_enabled: int = 0
     stepper_output_enabled: int = 0
     bubble_output_enabled: int = 0
+    runtime_flags: int = 0
     system_enabled: int = 0
     seen: bool = False
     last_update_time: float = 0.0
@@ -1259,6 +1882,321 @@ class RuntimeState:
     last_error: str = ""
     last_command: str = ""
     recent_logs: list[str] = field(default_factory=list)
+
+
+def clamp_number(value: object, fallback: float, minimum: float, maximum: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = fallback
+    return max(minimum, min(maximum, number))
+
+
+def clamp_int(value: object, fallback: int, minimum: int, maximum: int) -> int:
+    return int(round(clamp_number(value, fallback, minimum, maximum)))
+
+
+def normalize_hex_color(value: object, fallback: str = "#4b7dff") -> str:
+    text = str(value or fallback).strip()
+    if not text.startswith("#"):
+        text = f"#{text}"
+    if len(text) != 7:
+        return fallback
+    try:
+        int(text[1:], 16)
+    except ValueError:
+        return fallback
+    return text.lower()
+
+
+def hex_to_rgb(value: str) -> tuple[int, int, int]:
+    text = normalize_hex_color(value)
+    return int(text[1:3], 16), int(text[3:5], 16), int(text[5:7], 16)
+
+
+def seconds_to_ms(value: object) -> int:
+    return clamp_int(clamp_number(value, 0.0, 0.0, 60.0) * 1000, 0, 0, 60000)
+
+
+def sample_palette_color(palette: dict, position: int) -> dict:
+    stops = palette.get("stops") if isinstance(palette.get("stops"), list) else default_palette()["stops"]
+    clean = sorted(
+        [
+            {
+                "position": clamp_int(stop.get("position"), 0, 0, 100),
+                "color": normalize_hex_color(stop.get("color")),
+                "white": clamp_int(stop.get("white"), 0, 0, 255),
+            }
+            for stop in stops if isinstance(stop, dict)
+        ],
+        key=lambda stop: stop["position"],
+    )
+    if not clean:
+        clean = default_palette()["stops"]
+    target = clamp_int(position, 0, 0, 100)
+    left = clean[0]
+    right = clean[-1]
+    for index, stop in enumerate(clean):
+        if stop["position"] <= target:
+            left = stop
+        if stop["position"] >= target:
+            right = stop
+            break
+    if left["position"] == right["position"]:
+        red, green, blue = hex_to_rgb(left["color"])
+        return {"r": red, "g": green, "b": blue, "w": left["white"], "hex": left["color"]}
+    amount = (target - left["position"]) / (right["position"] - left["position"])
+    left_rgb = hex_to_rgb(left["color"])
+    right_rgb = hex_to_rgb(right["color"])
+    mixed = [round(left_rgb[i] * (1 - amount) + right_rgb[i] * amount) for i in range(3)]
+    white = round(left["white"] * (1 - amount) + right["white"] * amount)
+    return {"r": mixed[0], "g": mixed[1], "b": mixed[2], "w": white, "hex": f"#{mixed[0]:02x}{mixed[1]:02x}{mixed[2]:02x}"}
+
+
+def make_config_id(prefix: str) -> str:
+    return f"{prefix}-{int(time.time() * 1000)}"
+
+
+def default_palette() -> dict:
+    return {
+        "id": "default-palette",
+        "name": "Dream 默认色板",
+        "stops": [
+            {"position": 0, "color": "#4b7dff", "white": 0},
+            {"position": 42, "color": "#20c7bd", "white": 0},
+            {"position": 72, "color": "#ff5cc8", "white": 8},
+            {"position": 100, "color": "#ff8a4c", "white": 10},
+        ],
+        "twoLightOffsetSec": 1.0,
+        "flowPeriodSec": 6.0,
+    }
+
+
+class DreamConfigStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.data = self.load()
+
+    def default_data(self) -> dict:
+        palette = default_palette()
+        return {
+            "app": {
+                "runMode": "with_eeg",
+                "lightStrategy": "auto",
+                "selectedPaletteId": palette["id"],
+                "selectedBubbleConfigId": "",
+            },
+            "palettes": [palette],
+            "bubbleConfigs": [],
+        }
+
+    def load(self) -> dict:
+        if not self.path.exists():
+            data = self.default_data()
+            self.write(data)
+            return data
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except Exception:
+            data = self.default_data()
+            self.write(data)
+            return data
+        return self.normalize(data)
+
+    def write(self, data: Optional[dict] = None) -> None:
+        payload = self.normalize(data or self.data)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        self.data = payload
+
+    def normalize(self, data: dict) -> dict:
+        defaults = self.default_data()
+        app = data.get("app") if isinstance(data.get("app"), dict) else {}
+        palettes = data.get("palettes") if isinstance(data.get("palettes"), list) else []
+        bubble_configs = data.get("bubbleConfigs") if isinstance(data.get("bubbleConfigs"), list) else []
+        clean_palettes = [self.sanitize_palette(item) for item in palettes if isinstance(item, dict)]
+        if not clean_palettes:
+            clean_palettes = defaults["palettes"]
+        clean_bubble_configs = [self.sanitize_bubble_config(item) for item in bubble_configs if isinstance(item, dict)]
+        palette_ids = {item["id"] for item in clean_palettes}
+        bubble_ids = {item["id"] for item in clean_bubble_configs}
+        selected_palette = str(app.get("selectedPaletteId") or "")
+        if selected_palette not in palette_ids:
+            selected_palette = clean_palettes[0]["id"]
+        selected_bubble = str(app.get("selectedBubbleConfigId") or "")
+        if selected_bubble not in bubble_ids:
+            selected_bubble = ""
+        run_mode = str(app.get("runMode") or defaults["app"]["runMode"])
+        if run_mode not in RUN_MODE_CODES:
+            run_mode = defaults["app"]["runMode"]
+        light_strategy = str(app.get("lightStrategy") or defaults["app"]["lightStrategy"])
+        if light_strategy not in LIGHT_STRATEGY_CODES:
+            light_strategy = defaults["app"]["lightStrategy"]
+        return {
+            "app": {
+                "runMode": run_mode,
+                "lightStrategy": light_strategy,
+                "selectedPaletteId": selected_palette,
+                "selectedBubbleConfigId": selected_bubble,
+            },
+            "palettes": clean_palettes,
+            "bubbleConfigs": clean_bubble_configs,
+        }
+
+    def sanitize_palette(self, item: dict) -> dict:
+        stops = item.get("stops") if isinstance(item.get("stops"), list) else []
+        clean_stops = []
+        for stop in stops:
+            if not isinstance(stop, dict):
+                continue
+            clean_stops.append({
+                "position": clamp_int(stop.get("position"), 0, 0, 100),
+                "color": normalize_hex_color(stop.get("color")),
+                "white": clamp_int(stop.get("white"), 0, 0, 255),
+            })
+        if not clean_stops:
+            clean_stops = default_palette()["stops"]
+        clean_stops.sort(key=lambda stop: stop["position"])
+        return {
+            "id": str(item.get("id") or make_config_id("palette")),
+            "name": str(item.get("name") or "未命名色板")[:60],
+            "stops": clean_stops[:12],
+            "twoLightOffsetSec": round(clamp_number(item.get("twoLightOffsetSec"), 1.0, 0.0, 60.0), 1),
+            "flowPeriodSec": round(clamp_number(item.get("flowPeriodSec"), 6.0, 0.5, 60.0), 1),
+        }
+
+    def sanitize_bubble_config(self, item: dict) -> dict:
+        values = item.get("values") if isinstance(item.get("values"), dict) else {}
+        return {
+            "id": str(item.get("id") or make_config_id("bubble")),
+            "name": str(item.get("name") or "未命名泡泡流程")[:60],
+            "values": {
+                "reverseTurns": round(clamp_number(values.get("reverseTurns"), 1.0, 0.0, 20.0), 1),
+                "forwardTurns": round(clamp_number(values.get("forwardTurns"), 1.0, 0.0, 20.0), 1),
+                "fogStartSec": round(clamp_number(values.get("fogStartSec"), 1.0, 0.0, 60.0), 1),
+                "fanLightStartSec": round(clamp_number(values.get("fanLightStartSec"), 5.0, 0.0, 60.0), 1),
+                "forwardStartSec": round(clamp_number(values.get("forwardStartSec"), 9.0, 0.0, 60.0), 1),
+                "fogStopSec": round(clamp_number(values.get("fogStopSec"), 12.7, 0.0, 60.0), 1),
+                "fanStopSec": round(clamp_number(values.get("fanStopSec"), 13.7, 0.0, 60.0), 1),
+                "lightStopSec": round(clamp_number(values.get("lightStopSec"), 16.7, 0.0, 60.0), 1),
+            },
+        }
+
+    def snapshot(self) -> dict:
+        return copy.deepcopy(self.data)
+
+    def selected_palette(self) -> dict:
+        selected_id = self.data["app"]["selectedPaletteId"]
+        for palette in self.data["palettes"]:
+            if palette["id"] == selected_id:
+                return palette
+        return self.data["palettes"][0]
+
+    def apply_operation(self, payload: dict) -> dict:
+        kind = str(payload.get("kind") or "")
+        action = str(payload.get("action") or "")
+        if kind == "app" and action == "update":
+            app = dict(self.data["app"])
+            updates = payload.get("app") if isinstance(payload.get("app"), dict) else {}
+            if updates.get("runMode") in RUN_MODE_CODES:
+                app["runMode"] = updates["runMode"]
+            if updates.get("lightStrategy") in LIGHT_STRATEGY_CODES:
+                app["lightStrategy"] = updates["lightStrategy"]
+            palette_id = updates.get("selectedPaletteId")
+            if palette_id and any(item["id"] == palette_id for item in self.data["palettes"]):
+                app["selectedPaletteId"] = palette_id
+            bubble_id = updates.get("selectedBubbleConfigId")
+            if bubble_id == "" or any(item["id"] == bubble_id for item in self.data["bubbleConfigs"]):
+                app["selectedBubbleConfigId"] = bubble_id
+            self.data["app"] = app
+            self.write()
+            return self.snapshot()
+
+        if kind == "palette":
+            return self.apply_palette_operation(action, payload)
+        if kind == "bubble":
+            return self.apply_bubble_operation(action, payload)
+        raise ValueError(f"unknown store operation: {kind}/{action}")
+
+    def apply_palette_operation(self, action: str, payload: dict) -> dict:
+        item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+        item_id = str(payload.get("id") or item.get("id") or "")
+        if action == "create":
+            palette = self.sanitize_palette({**item, "id": make_config_id("palette")})
+            self.data["palettes"].append(palette)
+            self.data["app"]["selectedPaletteId"] = palette["id"]
+        elif action == "save":
+            palette = self.sanitize_palette({**item, "id": item_id})
+            for index, existing in enumerate(self.data["palettes"]):
+                if existing["id"] == item_id:
+                    self.data["palettes"][index] = palette
+                    break
+            else:
+                raise ValueError("palette not found")
+        elif action == "rename":
+            name = str(payload.get("name") or item.get("name") or "")[:60]
+            if not name:
+                raise ValueError("palette name is empty")
+            for palette in self.data["palettes"]:
+                if palette["id"] == item_id:
+                    palette["name"] = name
+                    break
+            else:
+                raise ValueError("palette not found")
+        elif action == "delete":
+            if len(self.data["palettes"]) <= 1:
+                raise ValueError("at least one palette is required")
+            self.data["palettes"] = [palette for palette in self.data["palettes"] if palette["id"] != item_id]
+            if self.data["app"]["selectedPaletteId"] == item_id:
+                self.data["app"]["selectedPaletteId"] = self.data["palettes"][0]["id"]
+        elif action == "select":
+            if not any(palette["id"] == item_id for palette in self.data["palettes"]):
+                raise ValueError("palette not found")
+            self.data["app"]["selectedPaletteId"] = item_id
+        else:
+            raise ValueError(f"unknown palette action: {action}")
+        self.write()
+        return self.snapshot()
+
+    def apply_bubble_operation(self, action: str, payload: dict) -> dict:
+        item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+        item_id = str(payload.get("id") or item.get("id") or "")
+        if action == "create":
+            config = self.sanitize_bubble_config({**item, "id": make_config_id("bubble")})
+            self.data["bubbleConfigs"].append(config)
+            self.data["app"]["selectedBubbleConfigId"] = config["id"]
+        elif action == "save":
+            config = self.sanitize_bubble_config({**item, "id": item_id})
+            for index, existing in enumerate(self.data["bubbleConfigs"]):
+                if existing["id"] == item_id:
+                    self.data["bubbleConfigs"][index] = config
+                    break
+            else:
+                raise ValueError("bubble config not found")
+        elif action == "rename":
+            name = str(payload.get("name") or item.get("name") or "")[:60]
+            if not name:
+                raise ValueError("bubble config name is empty")
+            for config in self.data["bubbleConfigs"]:
+                if config["id"] == item_id:
+                    config["name"] = name
+                    break
+            else:
+                raise ValueError("bubble config not found")
+        elif action == "delete":
+            self.data["bubbleConfigs"] = [config for config in self.data["bubbleConfigs"] if config["id"] != item_id]
+            if self.data["app"]["selectedBubbleConfigId"] == item_id:
+                self.data["app"]["selectedBubbleConfigId"] = ""
+        elif action == "select":
+            if item_id and not any(config["id"] == item_id for config in self.data["bubbleConfigs"]):
+                raise ValueError("bubble config not found")
+            self.data["app"]["selectedBubbleConfigId"] = item_id
+        else:
+            raise ValueError(f"unknown bubble action: {action}")
+        self.write()
+        return self.snapshot()
 
 
 class ThinkGearParser:
@@ -1325,6 +2263,7 @@ class DreamBridge:
         self.m5_status = M5Status()
         self.mic_status = MicStatus()
         self.runtime = RuntimeState()
+        self.store = DreamConfigStore(Path(__file__).with_name(CONFIG_STORE_NAME))
         self.lock = threading.Lock()
         self.command_queue: queue.Queue[str] = queue.Queue()
         self.start_time = time.monotonic()
@@ -1352,6 +2291,98 @@ class DreamBridge:
     def close_log_writer(self) -> None:
         if self.log_file is not None:
             self.log_file.close()
+
+    def eeg_usable_for_control(self) -> tuple[bool, str]:
+        now = time.monotonic()
+        with self.lock:
+            if not self.eeg_frame.seen:
+                return False, "尚未收到 ThinkGear 有效数据包"
+            age_ms = int((now - self.eeg_frame.last_source_time) * 1000)
+            if age_ms > EEG_CONTROL_STALE_MS:
+                return False, f"最近脑电数据已过期：{age_ms} ms"
+            if self.eeg_frame.poor_signal > EEG_CONTROL_POOR_SIGNAL_MAX:
+                return False, f"poorSignal={self.eeg_frame.poor_signal}，信号不可用于灯光"
+            if self.eeg_frame.attention <= 0 and self.eeg_frame.meditation <= 0:
+                return False, "attention/meditation 仍为空"
+            return True, "脑电信号可用于灯光"
+
+    def eeg_palette_color(self, palette: Optional[dict] = None) -> dict:
+        palette = palette or self.store.selected_palette()
+        with self.lock:
+            attention = self.eeg_frame.attention
+            meditation = self.eeg_frame.meditation
+        position = max(0, min(100, round((attention * 0.68 + meditation * 0.32))))
+        color = sample_palette_color(palette, position)
+        color["position"] = position
+        color["attention"] = attention
+        color["meditation"] = meditation
+        return color
+
+    def sync_runtime_to_board(self) -> list[str]:
+        warnings: list[str] = []
+        store = self.store.snapshot()
+        app = store["app"]
+        palette = self.store.selected_palette()
+        commands: list[tuple[str, list[int]]] = [
+            ("run_mode", [RUN_MODE_CODES[app["runMode"]], 0, 0, 0]),
+            (
+                "light_strategy",
+                [
+                    LIGHT_STRATEGY_CODES[app["lightStrategy"]],
+                    seconds_to_ms(palette["flowPeriodSec"]),
+                    seconds_to_ms(palette["twoLightOffsetSec"]),
+                    0,
+                ],
+            ),
+            (
+                "palette_settings",
+                [
+                    seconds_to_ms(palette["twoLightOffsetSec"]),
+                    seconds_to_ms(palette["flowPeriodSec"]),
+                    min(len(palette["stops"]), 6),
+                    0,
+                ],
+            ),
+        ]
+        for index, stop in enumerate(palette["stops"][:6]):
+            red, green, blue = hex_to_rgb(stop["color"])
+            commands.append((
+                "palette_node",
+                [
+                    index,
+                    min(len(palette["stops"]), 6),
+                    clamp_int(stop["position"] * 10, 0, 0, 1000),
+                    red,
+                    green,
+                    blue,
+                    clamp_int(stop.get("white"), 0, 0, 255),
+                    0,
+                ],
+            ))
+        for action, args in commands:
+            try:
+                self.queue_command(action, args)
+            except Exception as exc:
+                warnings.append(str(exc))
+                break
+        if warnings:
+            self.log(f"EVENT=RUNTIME_SYNC_DEFERRED REASON={warnings[0]}")
+        else:
+            self.log(
+                "EVENT=RUNTIME_SYNC_QUEUED "
+                f"RUN_MODE={app['runMode']} LIGHT_STRATEGY={app['lightStrategy']} "
+                f"PALETTE={palette['name']}"
+            )
+        return warnings
+
+    def apply_store_operation(self, payload: dict) -> dict:
+        store = self.store.apply_operation(payload)
+        warnings: list[str] = []
+        sync_requested = bool(payload.get("sync", True))
+        kind = payload.get("kind")
+        if sync_requested and kind in {"app", "palette"}:
+            warnings = self.sync_runtime_to_board()
+        return {"ok": True, "store": store, "warnings": warnings}
 
     def run_serial_loop(self) -> None:
         send_interval = 1.0 / self.args.send_rate
@@ -1593,6 +2624,7 @@ class DreamBridge:
                     self.mic_status.relay_output_enabled = int_value(pairs, "MIC_RELAY_ENABLED")
                     self.mic_status.stepper_output_enabled = int_value(pairs, "MIC_STEPPER_ENABLED")
                     self.mic_status.bubble_output_enabled = int_value(pairs, "MIC_BUBBLE_ENABLED")
+                    self.mic_status.runtime_flags = int_value(pairs, "MIC_RUNTIME")
                     self.mic_status.system_enabled = int_value(pairs, "MIC_SYSTEM_ENABLED")
                 else:
                     self.mic_status.seen = False
@@ -1644,6 +2676,13 @@ class DreamBridge:
             eeg_age = int((now - self.eeg_frame.last_source_time) * 1000) if self.eeg_frame.seen else -1
             m5_age = int((now - self.m5_status.last_update_time) * 1000) if self.m5_status.seen else -1
             mic_age = int((now - self.mic_status.last_update_time) * 1000) if self.mic_status.seen else -1
+            eeg_seen = self.eeg_frame.seen
+            eeg_poor_signal = self.eeg_frame.poor_signal
+            eeg_attention = self.eeg_frame.attention
+            eeg_meditation = self.eeg_frame.meditation
+            eeg_power = list(self.eeg_frame.eeg_power)
+        eeg_usable, eeg_diagnosis = self.eeg_usable_for_control()
+        with self.lock:
             return {
                 "config": {
                     "source": self.args.source,
@@ -1670,13 +2709,16 @@ class DreamBridge:
                     "targetLines": self.stats.target_lines,
                 },
                 "eeg": {
-                    "seen": self.eeg_frame.seen,
+                    "seen": eeg_seen,
                     "ageMs": eeg_age,
-                    "poorSignal": self.eeg_frame.poor_signal,
-                    "attention": self.eeg_frame.attention,
-                    "meditation": self.eeg_frame.meditation,
-                    "eegPower": list(self.eeg_frame.eeg_power),
+                    "poorSignal": eeg_poor_signal,
+                    "attention": eeg_attention,
+                    "meditation": eeg_meditation,
+                    "eegPower": eeg_power,
+                    "usable": eeg_usable,
+                    "diagnosis": eeg_diagnosis,
                 },
+                "store": self.store.snapshot(),
                 "m5": {
                     "seen": self.m5_status.seen,
                     "ageMs": m5_age,
@@ -1725,6 +2767,7 @@ class DreamBridge:
                     "relayOutputEnabled": self.mic_status.relay_output_enabled,
                     "stepperOutputEnabled": self.mic_status.stepper_output_enabled,
                     "bubbleOutputEnabled": self.mic_status.bubble_output_enabled,
+                    "runtimeFlags": self.mic_status.runtime_flags,
                     "systemEnabled": self.mic_status.system_enabled,
                 },
             }
@@ -1741,6 +2784,22 @@ class DreamRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/state":
             self.send_json(self.bridge.snapshot())
             return
+        if path == "/api/config":
+            self.send_json({"ok": True, "store": self.bridge.store.snapshot()})
+            return
+        if path == "/api/eeg-light-test":
+            usable, diagnosis = self.bridge.eeg_usable_for_control()
+            if not usable:
+                self.send_json({"ok": False, "error": diagnosis}, HTTPStatus.BAD_REQUEST)
+                return
+            color = self.bridge.eeg_palette_color()
+            try:
+                command = self.bridge.queue_command("light_color", [color["r"], color["g"], color["b"], color["w"]])
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json({"ok": True, "color": color, "diagnosis": diagnosis, "command": command})
+            return
         if path == "/events":
             self.handle_events()
             return
@@ -1748,6 +2807,16 @@ class DreamRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/config":
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            try:
+                result = self.bridge.apply_store_operation(payload)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(result)
+            return
         if path != "/api/command":
             self.send_error(HTTPStatus.NOT_FOUND)
             return

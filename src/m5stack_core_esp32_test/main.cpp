@@ -107,6 +107,10 @@ enum DreamControlAction : uint8_t {
   CONTROL_FAN_OFF,
   CONTROL_BUBBLE_TRIGGER,
   CONTROL_BUBBLE_CONFIG,
+  CONTROL_RUN_MODE,
+  CONTROL_LIGHT_STRATEGY,
+  CONTROL_PALETTE_SETTINGS,
+  CONTROL_PALETTE_NODE,
   CONTROL_VIBRATION_ENABLE,
   CONTROL_VIBRATION_DISABLE,
 };
@@ -427,6 +431,18 @@ uint8_t controlActionFromName(const char *actionName) {
   }
   if (strcmp(actionName, "BUBBLE_CONFIG") == 0) {
     return CONTROL_BUBBLE_CONFIG;
+  }
+  if (strcmp(actionName, "RUN_MODE") == 0) {
+    return CONTROL_RUN_MODE;
+  }
+  if (strcmp(actionName, "LIGHT_STRATEGY") == 0) {
+    return CONTROL_LIGHT_STRATEGY;
+  }
+  if (strcmp(actionName, "PALETTE_SETTINGS") == 0) {
+    return CONTROL_PALETTE_SETTINGS;
+  }
+  if (strcmp(actionName, "PALETTE_NODE") == 0) {
+    return CONTROL_PALETTE_NODE;
   }
   if (strcmp(actionName, "VIBRATION_ENABLE") == 0) {
     return CONTROL_VIBRATION_ENABLE;
@@ -1214,6 +1230,8 @@ void printStatus() {
   Serial.print(latestMicStatus.stepperOutputEnabled);
   Serial.print(" MIC_BUBBLE_ENABLED=");
   Serial.print(latestMicStatus.bubbleOutputEnabled);
+  Serial.print(" MIC_RUNTIME=");
+  Serial.print(latestMicStatus.reserved2);
   Serial.print(" MIC_SYSTEM_ENABLED=");
   Serial.print(latestMicStatus.systemEnabled);
   Serial.print(" VIB_STATUS=");
