@@ -58,6 +58,7 @@ Microduino --> DMX 灯光 / 步进电机 / 烟雾机继电器 / 风扇继电器
 | --- | --- |
 | [Dream使用说明总览](docs/Dream使用说明/Dream使用说明总览.md) | 当前原型的使用说明入口 |
 | [Dream电脑端与前端使用说明](docs/Dream使用说明/Dream电脑端与前端使用说明.md) | 电脑端 Python 桥接、浏览器前端和控制按钮 |
+| [Dream前端启动与停止命令](docs/Dream使用说明/Dream前端启动与停止命令.md) | 前端启动、停止、COM 口变化和端口变化命令 |
 | [Dream板卡固件烧录使用说明](docs/Dream使用说明/Dream板卡固件烧录使用说明.md) | M5Stack 和 Microduino 编译、上传、串口监视 |
 | [DreamM5Stack屏幕界面说明](docs/Dream使用说明/DreamM5Stack屏幕界面说明.md) | M5Stack 屏幕字段、按键和现场读屏判断 |
 | [Dream现场开机与关机流程](docs/Dream使用说明/Dream现场开机与关机流程.md) | 展示现场开机、测试、运行、关机顺序 |
@@ -79,6 +80,7 @@ Microduino --> DMX 灯光 / 步进电机 / 烟雾机继电器 / 风扇继电器
 │   ├── Dream使用说明/
 │   │   ├── Dream使用说明总览.md
 │   │   ├── Dream电脑端与前端使用说明.md
+│   │   ├── Dream前端启动与停止命令.md
 │   │   ├── Dream板卡固件烧录使用说明.md
 │   │   ├── DreamM5Stack屏幕界面说明.md
 │   │   ├── Dream现场开机与关机流程.md
@@ -92,6 +94,8 @@ Microduino --> DMX 灯光 / 步进电机 / 烟雾机继电器 / 风扇继电器
 │   └── Dream需求规划文档_V3.0.docx
 ├── tools/
 │   ├── dream_eeg_serial_bridge.py
+│   ├── start_dream_frontend.ps1
+│   ├── stop_dream_frontend.ps1
 │   └── eeg_serial_bridge.py
 └── src/
     ├── microduino_core_esp32_test/
@@ -162,6 +166,24 @@ python -m pip install pyserial
 powershell -ExecutionPolicy Bypass -File .\tools\start_dream_frontend.ps1
 ```
 
+如果 COM 口变化，先查看当前串口：
+
+```powershell
+& "$env:USERPROFILE\.platformio\penv\Scripts\pio.exe" device list
+```
+
+然后在启动时覆盖脑电串口和 M5Stack 串口：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\start_dream_frontend.ps1 -Source COM3 -Target COM6
+```
+
+如果波特率也变化：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\start_dream_frontend.ps1 -Source COM3 -SourceBaud 9600 -Target COM6 -TargetBaud 115200
+```
+
 也可以直接运行 Python 桥接程序：
 
 ```powershell
@@ -173,6 +195,20 @@ python tools\dream_eeg_serial_bridge.py --source COM10 --target COM6 --source-ba
 ```text
 http://127.0.0.1:8765/
 ```
+
+停止前端和桥接服务：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\stop_dream_frontend.ps1
+```
+
+如果启动时使用了其他前端端口，停止时也指定同一个端口，例如：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\stop_dream_frontend.ps1 -WebPort 8766
+```
+
+更完整的启动/停止命令见：[Dream前端启动与停止命令](docs/Dream使用说明/Dream前端启动与停止命令.md)。
 
 前端可以查看真实实时数据，并发送系统开启、系统关闭、灯光颜色、烟雾机、风扇、泡泡流程触发和步进电机指令。步进电机控制区固定控制单驱动板，可发送正向、反向或停止命令。系统关闭时灯光、烟雾机、风扇、泡泡流程和步进电机输出入口不可用；没有收到真实 EEG / M5Stack / Microduino 状态时，界面显示 `--` 或等待；所有控制按钮都有发送中、已发送、失败反馈。若 M5Stack 串口未打开，控制请求会返回失败。
 

@@ -4,10 +4,11 @@
 #include <esp_wifi.h>
 #include <esp_dmx.h>
 #include <esp_arduino_version.h>
+#include <esp_system.h>
 
 #define BOARD_NAME "Microduino Core ESP32"
 #define DEVICE_ROLE "micController"
-#define MIC_CONTROLLER_VERSION "0.1.3"
+#define MIC_CONTROLLER_VERSION "0.1.4"
 
 #define SERIAL_BAUD 115200
 #define ESPNOW_CHANNEL 1
@@ -32,6 +33,7 @@
 #define LIGHT_SMOOTH_TARGET_PERCENT 6
 #define LIGHT_SATURATION_PERCENT 65
 #define LIGHT_PALETTE_MAX_STOPS 6
+#define PALETTE_RANDOM_MIN_HOLD_MS 700
 
 // Keep EEG automatic linkage scoped to lights. Stepper remains available for manual bench tuning only.
 #define DREAM_ENABLE_EEG_STEPPER_AUTO 0
@@ -341,6 +343,10 @@ uint8_t runMode = RUN_MODE_WITH_EEG;
 uint8_t lightStrategy = LIGHT_STRATEGY_AUTO;
 uint8_t bubbleLightStrategy = LIGHT_STRATEGY_AUTO;
 RgbwColor bubbleRandomLightColor = {0x4B, 0x7D, 0xFF, 0};
+RgbwColor paletteRandomLight1 = {0x4B, 0x7D, 0xFF, 0};
+RgbwColor paletteRandomLight2 = {0x20, 0xC7, 0xBD, 0};
+uint32_t paletteRandomLastPickMs = 0;
+bool paletteRandomTargetsReady = false;
 RgbwColor manualLightColor = {};
 uint32_t bubbleStateStartMs = 0;
 uint32_t bubbleStartMs = 0;
@@ -538,7 +544,36 @@ RgbwColor samplePalette(uint16_t position10, uint8_t brightness = 255) {
 }
 
 RgbwColor randomPaletteColor() {
-  return samplePalette(static_cast<uint16_t>(random(0, 1001)), 255);
+  return samplePalette(static_cast<uint16_t>(esp_random() % 1001), 255);
+}
+
+uint16_t palettePositionOffset10() {
+  const uint16_t periodMs = max(static_cast<uint16_t>(paletteFlowPeriodMs), static_cast<uint16_t>(500));
+  return static_cast<uint16_t>((static_cast<uint32_t>(paletteTwoLightOffsetMs) * 1000UL / periodMs) % 1001);
+}
+
+void resetPaletteRandomTargets() {
+  paletteRandomTargetsReady = false;
+  paletteRandomLastPickMs = 0;
+}
+
+void pickPaletteRandomTargets(uint32_t now) {
+  const uint16_t light1Position = static_cast<uint16_t>(esp_random() % 1001);
+  const uint16_t light2Position = static_cast<uint16_t>((static_cast<uint32_t>(light1Position) + palettePositionOffset10()) % 1001);
+  paletteRandomLight1 = samplePalette(light1Position, 255);
+  paletteRandomLight2 = samplePalette(light2Position, 255);
+  paletteRandomLastPickMs = now;
+  paletteRandomTargetsReady = true;
+}
+
+void setPaletteRandomTargets() {
+  const uint32_t now = millis();
+  const uint32_t holdMs = max(static_cast<uint32_t>(paletteFlowPeriodMs), static_cast<uint32_t>(PALETTE_RANDOM_MIN_HOLD_MS));
+  if (!paletteRandomTargetsReady || now - paletteRandomLastPickMs >= holdMs) {
+    pickPaletteRandomTargets(now);
+  }
+  light1Target = paletteRandomLight1;
+  light2Target = paletteRandomLight2;
 }
 
 bool eegUsableForLight() {
@@ -901,6 +936,9 @@ void applyRunMode(const DreamControlEspNowPacket &packet) {
   if (runMode == RUN_MODE_NO_EEG && lightStrategy == LIGHT_STRATEGY_EEG_REALTIME) {
     lightStrategy = LIGHT_STRATEGY_PALETTE_RANDOM;
   }
+  manualLightEnabled = false;
+  manualLightColor = {0, 0, 0, 0};
+  resetPaletteRandomTargets();
   Serial.print("EVENT=RUN_MODE_APPLIED MODE=");
   Serial.println(runMode);
 }
@@ -912,6 +950,9 @@ void applyLightStrategy(const DreamControlEspNowPacket &packet) {
     paletteFlowPeriodMs = packet.arg2;
   }
   paletteTwoLightOffsetMs = packet.arg3;
+  manualLightEnabled = false;
+  manualLightColor = {0, 0, 0, 0};
+  resetPaletteRandomTargets();
   Serial.print("EVENT=LIGHT_STRATEGY_APPLIED STRATEGY=");
   Serial.print(lightStrategy);
   Serial.print(" FLOW_PERIOD_MS=");
@@ -925,6 +966,7 @@ void applyPaletteSettings(const DreamControlEspNowPacket &packet) {
   paletteFlowPeriodMs = max(static_cast<uint16_t>(500), packet.arg2);
   const uint8_t requestedCount = static_cast<uint8_t>(constrain(static_cast<int>(packet.arg3), 1, LIGHT_PALETTE_MAX_STOPS));
   paletteStopCount = requestedCount;
+  resetPaletteRandomTargets();
   Serial.print("EVENT=PALETTE_SETTINGS_APPLIED COUNT=");
   Serial.print(paletteStopCount);
   Serial.print(" OFFSET_MS=");
@@ -962,6 +1004,7 @@ void applyPaletteNode(const DreamControlEspNowPacket &packet) {
     },
   };
   sortPaletteStops();
+  resetPaletteRandomTargets();
   Serial.print("EVENT=PALETTE_NODE_APPLIED INDEX=");
   Serial.print(index);
   Serial.print(" COUNT=");
@@ -1648,18 +1691,14 @@ void updateLightTargets() {
 
   if (runMode == RUN_MODE_NO_EEG || lightStrategy == LIGHT_STRATEGY_PALETTE_RANDOM) {
     lightMode = LIGHT_IDLE;
-    const uint16_t phase = static_cast<uint16_t>((millis() % max(static_cast<uint16_t>(paletteFlowPeriodMs), static_cast<uint16_t>(500))) * 1000UL / max(static_cast<uint16_t>(paletteFlowPeriodMs), static_cast<uint16_t>(500)));
-    light1Target = samplePalette(phase, 255);
-    light2Target = samplePalette(static_cast<uint16_t>((phase + (static_cast<uint32_t>(paletteTwoLightOffsetMs) * 1000UL / max(static_cast<uint16_t>(paletteFlowPeriodMs), static_cast<uint16_t>(500)))) % 1000), 255);
+    setPaletteRandomTargets();
     return;
   }
 
   if (!eegUsableForLight()) {
     if (lightStrategy == LIGHT_STRATEGY_AUTO) {
       lightMode = LIGHT_IDLE;
-      const uint16_t phase = static_cast<uint16_t>((millis() % max(static_cast<uint16_t>(paletteFlowPeriodMs), static_cast<uint16_t>(500))) * 1000UL / max(static_cast<uint16_t>(paletteFlowPeriodMs), static_cast<uint16_t>(500)));
-      light1Target = samplePalette(phase, 255);
-      light2Target = samplePalette(static_cast<uint16_t>((phase + (static_cast<uint32_t>(paletteTwoLightOffsetMs) * 1000UL / max(static_cast<uint16_t>(paletteFlowPeriodMs), static_cast<uint16_t>(500)))) % 1000), 255);
+      setPaletteRandomTargets();
       return;
     }
     lightMode = LIGHT_SIGNAL_BAD;

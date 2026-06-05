@@ -34,6 +34,7 @@ EEG_SEND_STALE_MS = 1500
 SERIAL_RECONNECT_INTERVAL_S = 2.0
 EEG_CONTROL_STALE_MS = 2500
 EEG_CONTROL_POOR_SIGNAL_MAX = 120
+EEG_NOT_WORN_POOR_SIGNAL = 200
 CONFIG_STORE_NAME = "dream_config_store.json"
 RUN_MODE_CODES = {"with_eeg": 0, "no_eeg": 1}
 LIGHT_STRATEGY_CODES = {"eeg_realtime": 0, "palette_random": 1, "auto": 2}
@@ -1687,6 +1688,8 @@ INDEX_HTML = r"""<!doctype html>
 
     const update = (state) => {
       const eegSeen = Boolean(state.eeg.seen);
+      const eegFresh = Boolean(state.eeg.fresh);
+      const eegUsable = Boolean(state.eeg.usable);
       const m5Seen = Boolean(state.m5.seen);
       const micSeen = Boolean(state.mic.seen && state.m5.micStatus === "YES" && state.m5.micAgeMs >= 0 && state.m5.micAgeMs < 3000);
       const serialReady = Boolean(state.bridge.sourceOpen && state.bridge.targetOpen);
@@ -1710,7 +1713,11 @@ INDEX_HTML = r"""<!doctype html>
       pill(ids.m5Status, m5Seen ? "ok" : "warn", m5Seen ? "在线" : "等待");
       pill(ids.micStatus, micSeen ? "ok" : "warn", micSeen ? "在线" : "等待");
       pill(ids.vibrationStatus, vibrationSeen ? "ok" : "warn", vibrationSeen ? "在线" : (m5Seen ? "等待" : "M5等待"));
-      pill(ids.eegStatus, eegSeen ? (state.eeg.ageMs < 1200 ? "ok" : "warn") : "warn", eegSeen ? "真实数据" : "等待脑电");
+      pill(
+        ids.eegStatus,
+        eegUsable ? "ok" : (eegFresh ? "bad" : "warn"),
+        eegUsable ? "EEG usable" : (eegFresh ? "EEG invalid" : (eegSeen ? "EEG stale" : "waiting EEG"))
+      );
       setText("eegDiagnosis", state.eeg.diagnosis || "--");
       pill(ids.systemEnabled, micSeen ? (state.mic.systemEnabled ? "ok" : "bad") : "neutral", micSeen ? (state.mic.systemEnabled ? "系统已开启" : "系统关闭") : "--");
       setCommandReady(commandReady);
@@ -1720,7 +1727,12 @@ INDEX_HTML = r"""<!doctype html>
       setText("targetPort", `${state.config.target}@${state.config.targetBaud}`);
       setText("sendRate", `${state.config.sendRate} Hz`);
       setText("lastError", state.bridge.lastError || "--");
-      setText("eegAge", eegSeen ? `${state.eeg.ageMs} ms` : "-- ms");
+      setText(
+        "eegAge",
+        eegSeen
+          ? `${state.eeg.ageMs} ms / usable ${state.eeg.lastUsableAgeMs >= 0 ? state.eeg.lastUsableAgeMs + " ms" : "--"}`
+          : "-- ms"
+      );
       setText("m5Age", m5Seen ? `${state.m5.ageMs} ms` : "-- ms");
       setText("micAge", micSeen ? `${state.mic.ageMs} ms` : "-- ms");
 
@@ -1731,7 +1743,7 @@ INDEX_HTML = r"""<!doctype html>
       setBar("attentionBar", eegSeen, state.eeg.attention);
       setBar("meditationBar", eegSeen, state.eeg.meditation);
       EEG_POWER_FIELDS.forEach((name, index) => setText(name, realText(eegSeen, state.eeg.eegPower[index])));
-      setText("validPacketsPill", eegSeen ? `${state.stats.validPackets} 包` : "-- 包");
+      setText("validPacketsPill", eegSeen ? `${state.stats.validPackets} / usable ${state.stats.usablePackets ?? 0}` : "-- 包");
 
       setText("lightMode", modeText(micSeen, lightModes, state.mic.lightMode));
       setText("lightLevel", micSeen ? `level ${state.mic.lightLevel} L1 ${rgbwText(state.mic.light1Rgbw)} L2 ${rgbwText(state.mic.light2Rgbw)}` : "level --");
@@ -1762,7 +1774,7 @@ INDEX_HTML = r"""<!doctype html>
       pill(ids.stepperHint, micSeen ? (!state.mic.systemEnabled ? "neutral" : (state.mic.stepperOutputEnabled ? "ok" : "warn")) : "neutral", micSeen ? (!state.mic.systemEnabled ? "需系统开启" : (bubbleActive ? "泡泡流程中" : (state.mic.stepperOutputEnabled ? "可输出" : "输出关闭"))) : "--");
 
       setText("sentFrames", realText(state.bridge.targetOpen, state.stats.sentFrames));
-      setText("validPackets", realText(eegSeen, state.stats.validPackets));
+      setText("validPackets", eegSeen ? `${state.stats.validPackets} / usable ${state.stats.usablePackets ?? 0}` : "--");
       setText("checksumErrors", eegSeen ? `checksum ${state.stats.checksumErrors}` : "checksum --");
       setText("espNowStats", m5Seen ? `tx ${state.m5.espNowTx} / fail ${state.m5.espNowFail}` : "--");
       setText("m5Command", m5Seen ? `cmd rx ${state.m5.cmdRx} / tx ${state.m5.cmdTx}` : "cmd --");
@@ -1806,18 +1818,27 @@ class DreamEegFrame:
     seen: bool = False
     source_packet_count: int = 0
     last_source_time: float = 0.0
+    last_usable_time: float = 0.0
 
 
 @dataclass
 class BridgeStats:
     raw_bytes: int = 0
     valid_packets: int = 0
+    usable_packets: int = 0
     checksum_errors: int = 0
     length_errors: int = 0
     parse_errors: int = 0
     sent_frames: int = 0
     command_frames: int = 0
     target_lines: int = 0
+
+
+def is_eeg_frame_usable(eeg_frame: DreamEegFrame) -> bool:
+    return (
+        eeg_frame.poor_signal <= EEG_CONTROL_POOR_SIGNAL_MAX
+        and (eeg_frame.attention > 0 or eeg_frame.meditation > 0)
+    )
 
 
 @dataclass
@@ -2243,9 +2264,13 @@ class ThinkGearParser:
                 stats.checksum_errors += 1
                 return False
             if parse_thinkgear_payload(self.payload, eeg_frame):
+                now = time.monotonic()
                 stats.valid_packets += 1
+                if is_eeg_frame_usable(eeg_frame):
+                    stats.usable_packets += 1
+                    eeg_frame.last_usable_time = now
                 eeg_frame.source_packet_count += 1
-                eeg_frame.last_source_time = time.monotonic()
+                eeg_frame.last_source_time = now
                 eeg_frame.seen = True
                 return True
             stats.parse_errors += 1
@@ -2300,6 +2325,8 @@ class DreamBridge:
             age_ms = int((now - self.eeg_frame.last_source_time) * 1000)
             if age_ms > EEG_CONTROL_STALE_MS:
                 return False, f"最近脑电数据已过期：{age_ms} ms"
+            if self.eeg_frame.poor_signal >= EEG_NOT_WORN_POOR_SIGNAL:
+                return False, f"poorSignal={self.eeg_frame.poor_signal} (not worn/no contact)"
             if self.eeg_frame.poor_signal > EEG_CONTROL_POOR_SIGNAL_MAX:
                 return False, f"poorSignal={self.eeg_frame.poor_signal}，信号不可用于灯光"
             if self.eeg_frame.attention <= 0 and self.eeg_frame.meditation <= 0:
@@ -2639,14 +2666,17 @@ class DreamBridge:
 
     def print_status(self) -> None:
         with self.lock:
-            age_ms = int((time.monotonic() - self.eeg_frame.last_source_time) * 1000) if self.eeg_frame.seen else -1
-            uptime_ms = int((time.monotonic() - self.start_time) * 1000)
+            now = time.monotonic()
+            age_ms = int((now - self.eeg_frame.last_source_time) * 1000) if self.eeg_frame.seen else -1
+            last_usable_age_ms = int((now - self.eeg_frame.last_usable_time) * 1000) if self.eeg_frame.last_usable_time > 0 else -1
+            uptime_ms = int((now - self.start_time) * 1000)
             message = (
                 "EVENT=PC_BRIDGE_STATUS "
                 f"UPTIME_MS={uptime_ms} RAW_BYTES={self.stats.raw_bytes} VALID={self.stats.valid_packets} "
-                f"SENT={self.stats.sent_frames} COMMANDS={self.stats.command_frames} "
+                f"USABLE={self.stats.usable_packets} SENT={self.stats.sent_frames} COMMANDS={self.stats.command_frames} "
                 f"CHECKSUM_ERR={self.stats.checksum_errors} LENGTH_ERR={self.stats.length_errors} "
-                f"PARSE_ERR={self.stats.parse_errors} AGE_MS={age_ms} POOR_SIGNAL={self.eeg_frame.poor_signal} "
+                f"PARSE_ERR={self.stats.parse_errors} AGE_MS={age_ms} LAST_USABLE_AGE_MS={last_usable_age_ms} "
+                f"POOR_SIGNAL={self.eeg_frame.poor_signal} "
                 f"ATTENTION={self.eeg_frame.attention} MEDITATION={self.eeg_frame.meditation}"
             )
         self.log(message)
@@ -2674,6 +2704,12 @@ class DreamBridge:
         now = time.monotonic()
         with self.lock:
             eeg_age = int((now - self.eeg_frame.last_source_time) * 1000) if self.eeg_frame.seen else -1
+            eeg_last_usable_age = (
+                int((now - self.eeg_frame.last_usable_time) * 1000)
+                if self.eeg_frame.last_usable_time > 0
+                else -1
+            )
+            eeg_fresh = self.eeg_frame.seen and eeg_age <= EEG_CONTROL_STALE_MS
             m5_age = int((now - self.m5_status.last_update_time) * 1000) if self.m5_status.seen else -1
             mic_age = int((now - self.mic_status.last_update_time) * 1000) if self.mic_status.seen else -1
             eeg_seen = self.eeg_frame.seen
@@ -2701,6 +2737,7 @@ class DreamBridge:
                 "stats": {
                     "rawBytes": self.stats.raw_bytes,
                     "validPackets": self.stats.valid_packets,
+                    "usablePackets": self.stats.usable_packets,
                     "checksumErrors": self.stats.checksum_errors,
                     "lengthErrors": self.stats.length_errors,
                     "parseErrors": self.stats.parse_errors,
@@ -2710,7 +2747,9 @@ class DreamBridge:
                 },
                 "eeg": {
                     "seen": eeg_seen,
+                    "fresh": eeg_fresh,
                     "ageMs": eeg_age,
+                    "lastUsableAgeMs": eeg_last_usable_age,
                     "poorSignal": eeg_poor_signal,
                     "attention": eeg_attention,
                     "meditation": eeg_meditation,

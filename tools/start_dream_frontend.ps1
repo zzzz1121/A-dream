@@ -48,8 +48,30 @@ function Use-AvailableLogPath {
   }
 }
 
+function Get-SerialPortNames {
+  try {
+    return @([System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object)
+  } catch {
+    Write-Host "Unable to enumerate serial ports: $($_.Exception.Message)"
+    return @()
+  }
+}
+
 $outLog = Use-AvailableLogPath $outLog
 $errLog = Use-AvailableLogPath $errLog
+
+$serialPorts = Get-SerialPortNames
+if ($serialPorts.Count -gt 0) {
+  Write-Host "Available serial ports: $($serialPorts -join ', ')"
+} else {
+  Write-Host "Available serial ports: none detected"
+}
+if ($serialPorts.Count -gt 0 -and $serialPorts -notcontains $Source) {
+  Write-Host "WARNING: Source EEG port $Source is not in the current Windows COM list."
+}
+if ($serialPorts.Count -gt 0 -and $serialPorts -notcontains $Target) {
+  Write-Host "WARNING: Target M5 port $Target is not in the current Windows COM list."
+}
 
 $existing = Get-NetTCPConnection -LocalAddress $WebHost -LocalPort $WebPort -State Listen -ErrorAction SilentlyContinue
 if ($existing) {
@@ -105,6 +127,12 @@ try {
   Write-Host "Open:              http://${WebHost}:${WebPort}/"
   Write-Host "Source open:       $($state.bridge.sourceOpen)"
   Write-Host "Target open:       $($state.bridge.targetOpen)"
+  Write-Host "EEG fresh/usable:  $($state.eeg.fresh) / $($state.eeg.usable)"
+  Write-Host "EEG age:           $($state.eeg.ageMs) ms"
+  Write-Host "EEG last usable:   $($state.eeg.lastUsableAgeMs) ms"
+  Write-Host "EEG packets:       raw $($state.stats.rawBytes) / valid $($state.stats.validPackets) / usable $($state.stats.usablePackets)"
+  Write-Host "EEG values:        poorSignal $($state.eeg.poorSignal), attention $($state.eeg.attention), meditation $($state.eeg.meditation)"
+  Write-Host "EEG diagnosis:     $($state.eeg.diagnosis)"
   Write-Host "M5 seen:           $($state.m5.seen)"
   Write-Host "Microduino seen:   $($state.mic.seen)"
 } catch {

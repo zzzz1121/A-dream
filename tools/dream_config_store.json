@@ -2,55 +2,22 @@
   "app": {
     "runMode": "with_eeg",
     "lightStrategy": "palette_random",
-    "selectedPaletteId": "palette-1780541320672",
+    "selectedPaletteId": "palette-1780537028597",
     "selectedBubbleConfigId": "bubble-1780541169412"
   },
   "palettes": [
-    {
-      "id": "palette-1780535570821",
-      "name": "Dream 默认色板",
-      "stops": [
-        {
-          "position": 0,
-          "color": "#4b7dff",
-          "white": 0
-        },
-        {
-          "position": 42,
-          "color": "#20c7bd",
-          "white": 0
-        },
-        {
-          "position": 50,
-          "color": "#ffffff",
-          "white": 0
-        },
-        {
-          "position": 72,
-          "color": "#ff5cc8",
-          "white": 8
-        },
-        {
-          "position": 100,
-          "color": "#ff8a4c",
-          "white": 10
-        }
-      ],
-      "twoLightOffsetSec": 1.0,
-      "flowPeriodSec": 6.0
-    },
     {
       "id": "palette-1780537028597",
       "name": "新色板 2",
       "stops": [
         {
           "position": 0,
-          "color": "#4b7dff",
+          "color": "#ff674d",
           "white": 0
         },
         {
           "position": 100,
-          "color": "#ff5cc8",
+          "color": "#fdac3a",
           "white": 0
         }
       ],
@@ -63,12 +30,12 @@
       "stops": [
         {
           "position": 0,
-          "color": "#69f54d",
+          "color": "#98fbf5",
           "white": 0
         },
         {
           "position": 100,
-          "color": "#ff5cc8",
+          "color": "#93b2fb",
           "white": 0
         }
       ],
@@ -81,12 +48,30 @@
       "stops": [
         {
           "position": 0,
-          "color": "#4b7dff",
+          "color": "#86a5f3",
           "white": 0
         },
         {
           "position": 100,
-          "color": "#ff5cc8",
+          "color": "#f08e98",
+          "white": 0
+        }
+      ],
+      "twoLightOffsetSec": 1.0,
+      "flowPeriodSec": 6.0
+    },
+    {
+      "id": "palette-1780543954053",
+      "name": "新色板 5",
+      "stops": [
+        {
+          "position": 0,
+          "color": "#65adfb",
+          "white": 0
+        },
+        {
+          "position": 100,
+          "color": "#8bfd9e",
           "white": 0
         }
       ],
@@ -97,6 +82,20 @@
   "bubbleConfigs": [
     {
       "id": "bubble-1780541169412",
+      "name": "1.0",
+      "values": {
+        "reverseTurns": 1.0,
+        "forwardTurns": 1.0,
+        "fogStartSec": 3.5,
+        "fanLightStartSec": 2.0,
+        "forwardStartSec": 10.0,
+        "fogStopSec": 3.5,
+        "fanStopSec": 10.0,
+        "lightStopSec": 16.7
+      }
+    },
+    {
+      "id": "bubble-1780580258135",
       "name": "1.0",
       "values": {
         "reverseTurns": 1.0,
